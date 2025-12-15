@@ -139,6 +139,11 @@ namespace alpr
       std::string brHybridFallbackRegion; // format: country:pattern (e.g., eu:ad)
       float brHybridMinConfidence;
 
+      // Vehicle profile selection
+      std::string vehicleProfileMode; // auto | car | moto
+      float motoAspectRatioMin;
+      float motoAspectRatioMax;
+
       std::string postProcessRegexLetters;
       std::string postProcessRegexNumbers;
 

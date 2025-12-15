@@ -234,29 +234,46 @@ namespace alpr
     };
 
     std::vector<Attempt> attempts;
-    for (size_t i = 0; i < config->brHybridOrder.size(); i++)
+
+    // Determine vehicle profile
+    std::string vehicleProfile = decideVehicleProfile(warpedRegionsOfInterest);
+    std::cout << "[vehicle] profile=" << vehicleProfile << std::endl;
+
+    if (vehicleProfile == "moto")
     {
-      Attempt a;
-      a.country = config->brHybridOrder[i];
-      a.label = a.country;
-      attempts.push_back(a);
-      if (i == 0 && config->brHybridFallbackRegion.size() > 0)
+      // Moto path
+      attempts.push_back({"br2_moto", "", "br2_moto"});
+      attempts.push_back({"br_moto", "", "br_moto"});
+      attempts.push_back({"br2", "", "br2"});
+      attempts.push_back({"br", "", "br"});
+    }
+    else
+    {
+      // Car path (existing order + optional eu/ad)
+      for (size_t i = 0; i < config->brHybridOrder.size(); i++)
       {
-        // Optional eu/ad between first and second attempt
-        std::string fallback = config->brHybridFallbackRegion;
-        size_t pos = fallback.find(':');
-        Attempt fb;
-        if (pos != std::string::npos)
+        Attempt a;
+        a.country = config->brHybridOrder[i];
+        a.label = a.country;
+        attempts.push_back(a);
+        if (i == 0 && config->brHybridFallbackRegion.size() > 0)
         {
-          fb.country = fallback.substr(0, pos);
-          fb.pattern = fallback.substr(pos + 1);
+          // Optional eu/ad between first and second attempt
+          std::string fallback = config->brHybridFallbackRegion;
+          size_t pos = fallback.find(':');
+          Attempt fb;
+          if (pos != std::string::npos)
+          {
+            fb.country = fallback.substr(0, pos);
+            fb.pattern = fallback.substr(pos + 1);
+          }
+          else
+          {
+            fb.country = fallback;
+          }
+          fb.label = config->brHybridFallbackRegion;
+          attempts.push_back(fb);
         }
-        else
-        {
-          fb.country = fallback;
-        }
-        fb.label = config->brHybridFallbackRegion;
-        attempts.push_back(fb);
       }
     }
 
@@ -277,6 +294,8 @@ namespace alpr
     double bestConf = -1.0;
     AlprFullDetails bestOkResult;
     AlprFullDetails bestResult;
+    std::string bestOkLabel;
+    std::string bestLabel;
 
     for (size_t idx = 0; idx < attempts.size(); idx++)
     {
@@ -325,12 +344,14 @@ namespace alpr
       {
         bestOkConf = conf;
         bestOkResult = result;
+        bestOkLabel = attempt.label;
       }
 
       if (idx == 0 || conf > bestConf)
       {
         bestConf = conf;
         bestResult = result;
+        bestLabel = attempt.label;
       }
 
       setDefaultRegion(prevRegion);
@@ -341,9 +362,34 @@ namespace alpr
     setDefaultRegion(originalDefaultRegion);
     if (bestOkConf >= 0)
     {
+      std::cout << "[br-hybrid] final profile=" << bestOkLabel << " winner_conf=" << bestOkConf << std::endl;
       return bestOkResult;
     }
+    std::cout << "[br-hybrid] final fallback profile=" << bestLabel << " winner_conf=" << bestConf << std::endl;
     return bestResult;
+  }
+
+  std::string AlprImpl::decideVehicleProfile(const std::vector<cv::Rect>& warpedRegionsOfInterest)
+  {
+    if (config->vehicleProfileMode == "moto")
+      return "moto";
+    if (config->vehicleProfileMode == "car")
+      return "car";
+
+    if (warpedRegionsOfInterest.size() == 0)
+      return "car";
+
+    cv::Rect r = warpedRegionsOfInterest[0];
+    if (r.height == 0)
+      return "car";
+    float aspect = ((float) r.width) / ((float) r.height);
+
+    if (config->debugGeneral)
+      std::cout << "[vehicle] aspect_ratio=" << aspect << " range(" << config->motoAspectRatioMin << "," << config->motoAspectRatioMax << ")" << std::endl;
+
+    if (aspect >= config->motoAspectRatioMin && aspect <= config->motoAspectRatioMax)
+      return "moto";
+    return "car";
   }
 
   AlprFullDetails AlprImpl::analyzeSingleCountry(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest)

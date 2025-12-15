@@ -242,6 +242,11 @@ namespace alpr
     brHybridFallbackRegion = getString(ini, defaultIni, "", "br_hybrid_fallback_region", "");
     brHybridMinConfidence = getFloat(ini, defaultIni, "", "br_hybrid_min_confidence", 80);
 
+    vehicleProfileMode = getString(ini, defaultIni, "", "vehicle_profile_mode", "auto");
+    std::transform(vehicleProfileMode.begin(), vehicleProfileMode.end(), vehicleProfileMode.begin(), ::tolower);
+    motoAspectRatioMin = getFloat(ini, defaultIni, "", "moto_aspect_ratio_min", 0.9f);
+    motoAspectRatioMax = getFloat(ini, defaultIni, "", "moto_aspect_ratio_max", 2.2f);
+
     debugGeneral = 	getBoolean(ini, defaultIni, "", "debug_general",		false);
     debugTiming = 	getBoolean(ini, defaultIni, "", "debug_timing",		false);
     debugPrewarp = 	getBoolean(ini, defaultIni, "", "debug_prewarp",		false);
