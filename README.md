@@ -103,6 +103,11 @@ cmake ..
 make -j$(nproc)
 ```
 
+Install (one-liner, non-interativo):
+```bash
+sudo TEST_IMAGE=/caminho/para/imagem.jpg ./scripts/install.sh
+```
+
 ## Usage
 ```bash
 alpr -c br car.jpg
