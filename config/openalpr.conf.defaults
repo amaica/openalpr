@@ -82,6 +82,18 @@ roi_y = 0.0
 roi_width = 1.0
 roi_height = 1.0
 
+; Optional lightweight pre-processing (applied on ROI). Disabled by default.
+preproc_enable = 0
+preproc_brightness = 0.0
+preproc_contrast = 1.0
+preproc_gamma = 1.0
+preproc_clahe_enable = 0
+preproc_clahe_clip = 2.0
+preproc_sharpen = 0.0
+preproc_denoise = 0.0
+; If 1, apply pre-processing before detector. Default 0 (only before OCR)
+preproc_apply_before_detector = 0
+
 ; Bypasses plate detection.  If this is set to 1, the library assumes that each region provided is a likely plate area.
 skip_detection = 0
 

@@ -151,6 +151,17 @@ namespace alpr
       float roiWidth;
       float roiHeight;
 
+      // Lightweight preprocessing (disabled by default)
+      bool preprocEnable;
+      float preprocBrightness;
+      float preprocContrast;
+      float preprocGamma;
+      bool preprocClaheEnable;
+      float preprocClaheClip;
+      float preprocSharpen;
+      float preprocDenoise;
+      bool preprocApplyBeforeDetector; // default false (apply only before OCR)
+
       std::string postProcessRegexLetters;
       std::string postProcessRegexNumbers;
 

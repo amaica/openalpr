@@ -253,6 +253,16 @@ namespace alpr
     roiWidth = getFloat(ini, defaultIni, "", "roi_width", 1.0f);
     roiHeight = getFloat(ini, defaultIni, "", "roi_height", 1.0f);
 
+    preprocEnable = getBoolean(ini, defaultIni, "", "preproc_enable", false);
+    preprocBrightness = getFloat(ini, defaultIni, "", "preproc_brightness", 0.0f);
+    preprocContrast = getFloat(ini, defaultIni, "", "preproc_contrast", 1.0f);
+    preprocGamma = getFloat(ini, defaultIni, "", "preproc_gamma", 1.0f);
+    preprocClaheEnable = getBoolean(ini, defaultIni, "", "preproc_clahe_enable", false);
+    preprocClaheClip = getFloat(ini, defaultIni, "", "preproc_clahe_clip", 2.0f);
+    preprocSharpen = getFloat(ini, defaultIni, "", "preproc_sharpen", 0.0f);
+    preprocDenoise = getFloat(ini, defaultIni, "", "preproc_denoise", 0.0f);
+    preprocApplyBeforeDetector = getBoolean(ini, defaultIni, "", "preproc_apply_before_detector", false);
+
     debugGeneral = 	getBoolean(ini, defaultIni, "", "debug_general",		false);
     debugTiming = 	getBoolean(ini, defaultIni, "", "debug_timing",		false);
     debugPrewarp = 	getBoolean(ini, defaultIni, "", "debug_prewarp",		false);

@@ -89,7 +89,7 @@ namespace alpr
       AlprResults recognize( cv::Mat img );
       AlprResults recognize( cv::Mat img, std::vector<cv::Rect> regionsOfInterest );
 
-      AlprFullDetails analyzeSingleCountry(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> regionsOfInterest);
+      AlprFullDetails analyzeSingleCountry(cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> regionsOfInterest);
 
       void setCountry(std::string country);
       void setPrewarp(std::string prewarp_config);
@@ -122,8 +122,8 @@ namespace alpr
       std::string defaultRegion;
 
       void loadRecognizers();
-      AlprFullDetails runCountryAnalysis(const std::string& country, cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
-      AlprFullDetails analyzeWithFallback(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
+      AlprFullDetails runCountryAnalysis(const std::string& country, cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
+      AlprFullDetails analyzeWithFallback(cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
       std::string decideVehicleProfile(const std::vector<cv::Rect>& warpedRegionsOfInterest);
       
       cv::Mat getCharacterTransformMatrix(PipelineData* pipeline_data );

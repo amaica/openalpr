@@ -28,6 +28,74 @@ using namespace cv;
 
 namespace alpr
 {
+  namespace
+  {
+    inline std::vector<cv::Rect> normalize_rois(const std::vector<cv::Rect>& rois, const cv::Mat& img)
+    {
+      if (rois.size() > 0)
+        return rois;
+      return { cv::Rect(0, 0, img.cols, img.rows) };
+    }
+
+    void applyPreprocessing(const Config* config, cv::Mat& color, cv::Mat& gray, const std::vector<cv::Rect>& rois)
+    {
+      if (!config || !config->preprocEnable)
+        return;
+
+      const float alpha = config->preprocContrast;
+      const float beta = config->preprocBrightness;
+      const float gamma = config->preprocGamma;
+      const bool useClahe = config->preprocClaheEnable;
+      const float claheClip = config->preprocClaheClip;
+      const float sharpen = config->preprocSharpen;
+      const float denoise = config->preprocDenoise;
+
+      cv::Mat gammaLut;
+      if (std::abs(gamma - 1.0f) > 1e-3f)
+      {
+        gammaLut.create(1, 256, CV_8U);
+        for (int i = 0; i < 256; ++i)
+        {
+          gammaLut.at<uchar>(i) = cv::saturate_cast<uchar>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f);
+        }
+      }
+
+      cv::Ptr<cv::CLAHE> clahePtr;
+      if (useClahe)
+        clahePtr = cv::createCLAHE(claheClip, cv::Size(8, 8));
+
+      auto apply_roi = [&](cv::Mat& mat, const cv::Rect& r)
+      {
+        cv::Mat roi = mat(r);
+        if (alpha != 1.0f || beta != 0.0f)
+          roi.convertTo(roi, -1, alpha, beta);
+        if (!gammaLut.empty())
+          cv::LUT(roi, gammaLut, roi);
+        if (clahePtr && roi.channels() == 1)
+          clahePtr->apply(roi, roi);
+        if (sharpen > 0.0f)
+        {
+          cv::Mat blurred;
+          cv::GaussianBlur(roi, blurred, cv::Size(0, 0), 1.0);
+          cv::addWeighted(roi, 1.0 + sharpen, blurred, -sharpen, 0, roi);
+        }
+        if (denoise > 0.0f && roi.channels() == 1)
+        {
+          cv::Mat tmp;
+          cv::fastNlMeansDenoising(roi, tmp, denoise);
+          tmp.copyTo(roi);
+        }
+      };
+
+      auto safe_rois = normalize_rois(rois, gray);
+      for (const auto& r : safe_rois)
+      {
+        apply_roi(gray, r);
+        if (color.data)
+          apply_roi(color, r);
+      }
+    }
+  }
   AlprImpl::AlprImpl(const std::string country, const std::string configFile, const std::string runtimeDir)
   {
     
@@ -153,17 +221,38 @@ namespace alpr
     Mat grayImg = img;
     if (img.channels() > 2)
       cvtColor( img, grayImg, COLOR_BGR2GRAY );
-    
+
+    // Prepare preprocessing buffers (processed separate from detection when needed)
+    cv::Mat procColor = img;
+    cv::Mat procGray = grayImg;
+    if (config->preprocEnable)
+    {
+      procColor = img.clone();
+      procGray = grayImg.clone();
+      applyPreprocessing(config, procColor, procGray, effectiveRois);
+      if (config->debugGeneral)
+        std::cout << "[preproc] enabled (apply_before_detector=" << config->preprocApplyBeforeDetector << ")" << std::endl;
+    }
+
+    cv::Mat detectColor = img;
+    cv::Mat detectGray = grayImg;
+    if (config->preprocEnable && config->preprocApplyBeforeDetector)
+    {
+      detectColor = procColor;
+      detectGray = procGray;
+    }
+
     // Prewarp the image and ROIs if configured]
     std::vector<cv::Rect> warpedRegionsOfInterest = effectiveRois;
     // Warp the image if prewarp is provided
-    grayImg = prewarp->warpImage(grayImg);
-    warpedRegionsOfInterest = prewarp->projectRects(effectiveRois, grayImg.cols, grayImg.rows, false);
+    detectGray = prewarp->warpImage(detectGray);
+    procGray = prewarp->warpImage(procGray);
+    warpedRegionsOfInterest = prewarp->projectRects(effectiveRois, detectGray.cols, detectGray.rows, false);
 
     // Hybrid BR flow
     if (config->country == "br" && config->brHybridEnable)
     {
-      response = analyzeWithFallback(img, grayImg, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
+      response = analyzeWithFallback(detectColor, detectGray, procColor, procGray, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
     }
     else
     {
@@ -175,7 +264,7 @@ namespace alpr
         if (config->debugGeneral)
           cout << "Analyzing: " << config->loaded_countries[i] << endl;
 
-        AlprFullDetails sub_results = runCountryAnalysis(config->loaded_countries[i], img, grayImg, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
+        AlprFullDetails sub_results = runCountryAnalysis(config->loaded_countries[i], detectColor, detectGray, procColor, procGray, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
         country_aggregator.addResults(sub_results);
       }
       response = country_aggregator.getAggregateResults();
@@ -241,7 +330,7 @@ namespace alpr
     return response;
   }
 
-  AlprFullDetails AlprImpl::runCountryAnalysis(const std::string& country, cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
+  AlprFullDetails AlprImpl::runCountryAnalysis(const std::string& country, cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
   {
     config->setCountry(country);
     loadRecognizers();
@@ -249,20 +338,20 @@ namespace alpr
     ResultAggregator iter_aggregator(MERGE_COMBINE, topN, config);
     for (unsigned int iteration = 0; iteration < config->analysis_count; iteration++)
     {
-      Mat iteration_image = iter_aggregator.applyImperceptibleChange(grayImg, iteration);
-      AlprFullDetails iter_results = analyzeSingleCountry(colorImg, iteration_image, warpedRegionsOfInterest);
+      Mat iteration_image = iter_aggregator.applyImperceptibleChange(detectGrayImg, iteration);
+      AlprFullDetails iter_results = analyzeSingleCountry(detectColorImg, iteration_image, processColorImg, processGrayImg, warpedRegionsOfInterest);
       iter_aggregator.addResults(iter_results);
     }
 
     AlprFullDetails sub_results = iter_aggregator.getAggregateResults();
     sub_results.results.epoch_time = start_time;
-    sub_results.results.img_width = colorImg.cols;
-    sub_results.results.img_height = colorImg.rows;
+    sub_results.results.img_width = detectColorImg.cols;
+    sub_results.results.img_height = detectColorImg.rows;
     sub_results.results.regionsOfInterest = rois;
     return sub_results;
   }
 
-  AlprFullDetails AlprImpl::analyzeWithFallback(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
+  AlprFullDetails AlprImpl::analyzeWithFallback(cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
   {
     struct Attempt {
       std::string country;
@@ -347,7 +436,7 @@ namespace alpr
       else
         setDefaultRegion(originalDefaultRegion);
 
-      AlprFullDetails result = runCountryAnalysis(attempt.country, colorImg, grayImg, warpedRegionsOfInterest, rois, start_time);
+      AlprFullDetails result = runCountryAnalysis(attempt.country, detectColorImg, detectGrayImg, processColorImg, processGrayImg, warpedRegionsOfInterest, rois, start_time);
 
       double conf = -1.0;
       bool matchesTemplate = false;
@@ -429,7 +518,7 @@ namespace alpr
     return "car";
   }
 
-  AlprFullDetails AlprImpl::analyzeSingleCountry(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest)
+  AlprFullDetails AlprImpl::analyzeSingleCountry(cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest)
   {
     AlprFullDetails response;
     
@@ -441,7 +530,7 @@ namespace alpr
     // Find all the candidate regions
     if (config->skipDetection == false)
     {
-      warpedPlateRegions = country_recognizers.plateDetector->detect(grayImg, warpedRegionsOfInterest);
+      warpedPlateRegions = country_recognizers.plateDetector->detect(detectGrayImg, warpedRegionsOfInterest);
     }
     else
     {
@@ -465,7 +554,7 @@ namespace alpr
       PlateRegion plateRegion = plateQueue.front();
       plateQueue.pop();
 
-      PipelineData pipeline_data(colorImg, grayImg, plateRegion.rect, config);
+      PipelineData pipeline_data(processColorImg, processGrayImg, plateRegion.rect, config);
       pipeline_data.prewarp = prewarp;
 
       timespec platestarttime;
@@ -611,7 +700,7 @@ namespace alpr
     }
 
     // Unwarp plate regions if necessary
-    prewarp->projectPlateRegions(warpedPlateRegions, grayImg.cols, grayImg.rows, true);
+    prewarp->projectPlateRegions(warpedPlateRegions, detectGrayImg.cols, detectGrayImg.rows, true);
     response.plateRegions = warpedPlateRegions;
 
     timespec endTime;
