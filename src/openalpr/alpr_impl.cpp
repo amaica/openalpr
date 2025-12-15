@@ -93,14 +93,50 @@ namespace alpr
 
     int64_t start_time = getEpochTimeMs();
 
-    // Fix regions of interest in case they extend beyond the bounds of the image
-    for (unsigned int i = 0; i < regionsOfInterest.size(); i++)
-      regionsOfInterest[i] = expandRect(regionsOfInterest[i], 0, 0, img.cols, img.rows);
-
-    for (unsigned int i = 0; i < regionsOfInterest.size(); i++)
+    // Apply optional ROI (percent-based) before detection
+    std::vector<cv::Rect> effectiveRois = regionsOfInterest;
+    if (config->roiEnabled)
     {
-      response.results.regionsOfInterest.push_back(AlprRegionOfInterest(regionsOfInterest[i].x, regionsOfInterest[i].y,
-              regionsOfInterest[i].width, regionsOfInterest[i].height));
+      float rx = std::max(0.0f, std::min(1.0f, config->roiX));
+      float ry = std::max(0.0f, std::min(1.0f, config->roiY));
+      float rw = std::max(0.0f, std::min(1.0f, config->roiWidth));
+      float rh = std::max(0.0f, std::min(1.0f, config->roiHeight));
+
+      int x = static_cast<int>(rx * img.cols);
+      int y = static_cast<int>(ry * img.rows);
+      int w = static_cast<int>(rw * img.cols);
+      int h = static_cast<int>(rh * img.rows);
+
+      // Clamp to frame
+      x = std::max(0, std::min(x, img.cols));
+      y = std::max(0, std::min(y, img.rows));
+      w = std::max(0, std::min(w, img.cols - x));
+      h = std::max(0, std::min(h, img.rows - y));
+
+      if (w >= 4 && h >= 4)
+      {
+        effectiveRois.clear();
+        effectiveRois.push_back(cv::Rect(x, y, w, h));
+        std::cout << "[roi] enabled x=" << x << " y=" << y << " w=" << w << " h=" << h << std::endl;
+      }
+      else
+      {
+        std::cout << "[roi] disabled (invalid ROI computed). Using full frame." << std::endl;
+      }
+    }
+
+    // If no ROIs provided, default to full frame
+    if (effectiveRois.size() == 0)
+      effectiveRois.push_back(cv::Rect(0, 0, img.cols, img.rows));
+
+    // Fix regions of interest in case they extend beyond the bounds of the image
+    for (unsigned int i = 0; i < effectiveRois.size(); i++)
+      effectiveRois[i] = expandRect(effectiveRois[i], 0, 0, img.cols, img.rows);
+
+    for (unsigned int i = 0; i < effectiveRois.size(); i++)
+    {
+      response.results.regionsOfInterest.push_back(AlprRegionOfInterest(effectiveRois[i].x, effectiveRois[i].y,
+              effectiveRois[i].width, effectiveRois[i].height));
     }
 
     if (!img.data)
@@ -118,10 +154,10 @@ namespace alpr
       cvtColor( img, grayImg, COLOR_BGR2GRAY );
     
     // Prewarp the image and ROIs if configured]
-    std::vector<cv::Rect> warpedRegionsOfInterest = regionsOfInterest;
+    std::vector<cv::Rect> warpedRegionsOfInterest = effectiveRois;
     // Warp the image if prewarp is provided
     grayImg = prewarp->warpImage(grayImg);
-    warpedRegionsOfInterest = prewarp->projectRects(regionsOfInterest, grayImg.cols, grayImg.rows, false);
+    warpedRegionsOfInterest = prewarp->projectRects(effectiveRois, grayImg.cols, grayImg.rows, false);
 
     // Hybrid BR flow
     if (config->country == "br" && config->brHybridEnable)
@@ -153,9 +189,9 @@ namespace alpr
 
     if (config->debugGeneral && config->debugShowImages)
     {
-      for (unsigned int i = 0; i < regionsOfInterest.size(); i++)
+      for (unsigned int i = 0; i < effectiveRois.size(); i++)
       {
-        rectangle(img, regionsOfInterest[i], Scalar(0,255,0), 2);
+        rectangle(img, effectiveRois[i], Scalar(0,255,0), 2);
       }
 
       for (unsigned int i = 0; i < response.plateRegions.size(); i++)
