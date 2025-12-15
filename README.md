@@ -1,76 +1,72 @@
-# 🚘 OpenALPR 2025 — Brazil & Mercosur (Cars + Motorcycles, YOLO-powered)
+# 🚘 OpenALPR 2025 — Brazil & Mercosur  
+### Cars + Motorcycles • YOLOv8 • Production-ready C++
 
-> 🇺🇸 English version  
-> 🇧🇷 Versão em Português logo abaixo
+> 🇺🇸 **English version**  
+> 🇧🇷 **Versão em Português logo abaixo**
 
 ---
 
-## 📌 Overview
+## 📌 Table of Contents
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Performance](#performance)
+- [Configuration](#configuration)
+- [Build](#build)
+- [Usage](#usage)
+- [Project Status](#project-status)
+- [Philosophy](#philosophy)
+- [Disclaimer](#disclaimer)
+- [Português](#português)
 
-This repository is a **deep architectural evolution** of the classic OpenALPR engine, bringing it to **2025 standards**, with a strong focus on:
+---
 
-- 🇧🇷 **Brazil & Mercosur plates**
-- 🏍️ **Motorcycle plates (real detection + OCR)**
+## Overview
+
+This repository is a **deep architectural evolution** of the classic OpenALPR engine, bringing it to **2025 production standards**, with a strong focus on:
+
+- 🇧🇷 **Brazil & Mercosur license plates**
+- 🏍️ **Motorcycle plates (real detection and OCR)**
 - ⚡ **High performance and real scalability**
-- 🧠 **Modern AI integration (YOLOv8)**
-- 🔌 **Plugable, configurable, production-ready architecture**
+- 🧠 **Modern AI-based detection (YOLOv8)**
+- 🔌 **Plugable, configurable, and extensible architecture**
 
 > **This is not just a fork.**  
-> It is an incremental reengineering effort that preserves what works and replaces what aged.
+> It is an incremental reengineering effort that preserves what works and replaces what aged — without shortcuts or fragile hacks.
 
 ---
 
 ## ✨ Key Features
 
-### ✅ Native Brazil & Mercosur support
-- Old Brazilian plates (LLLNNNN)
-- Mercosur plates (LLLNLNN)
-- Native `br2 → br` fallback
+### ✅ Native Brazil & Mercosur Support
+- Old Brazilian plates: **LLLNNNN**
+- Mercosur plates: **LLLNLNN**
+- Native hybrid pipeline: **br2 → br**
 - No dependency on `eu/ad`
-- Explicit, configurable and logged fallback logic
+- Explicit, deterministic, and logged fallback logic
 
 ---
 
-### 🏍️ Real motorcycle plate support
+### 🏍️ Real Motorcycle Plate Support
 - YOLOv8-based detection
-- Dedicated OCR profiles:
+- Dedicated OCR profiles for motorcycles:
   - `br_moto.conf`
   - `br2_moto.conf`
-- Automatic profile selection:
+- Automatic selection:
   - YOLO class (`plate_car` / `plate_moto`)
   - or bounding box aspect ratio
 - Same 7-character validation rules
+- No hacks or duplicated OCR logic
 
 ---
 
-### 🧠 Modern YOLO-powered detection (plugable)
+### 🧠 Modern YOLO-Powered Detection (Plugable)
 - YOLOv8 ONNX as primary detector
-- Model loaded via config (no recompilation)
+- Models loaded by **config path** (no recompilation)
 - Automatic hardware detection:
   - CPU
-  - GPU (CUDA when available)
+  - GPU (CUDA, when available)
 - Safe fallback to classic detector
-
----
-
-### ⚡ Production-grade performance
-- Process-based parallelism
-- One YOLO + one ALPR instance per worker
-- Linear scaling with CPU/GPU
-- No shared state, no race conditions
-
----
-
-### 🔌 2025-ready architecture
-- Detector abstraction (classic / YOLO / future)
-- Vehicle-type OCR profiles (car / motorcycle)
-- Prepared for:
-  - Modern OCR (ONNX)
-  - Video tracking
-  - Microservices
-  - MCP / AI agents
-
----
-
-## 🧩 Architecture (High Level)
-
+- Detector selection:
+  ```ini
+  detector_type = auto   # auto | yolo | classic
