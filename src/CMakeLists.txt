@@ -116,6 +116,7 @@ add_definitions( -DOPENCV_MAJOR_VERSION=${OpenCV_VERSION_MAJOR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(./openalpr )
 include_directories(./cli )
+include_directories(./tools )
 
 IF (WIN32)
 	add_definitions( -DWINDOWS)
@@ -138,6 +139,7 @@ ENDIF()
 set(CMAKE_CSS_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall ")
 if (NOT IOS)
   ADD_EXECUTABLE( alpr  main.cpp cli/recognition_worker_process.cpp )
+  ADD_EXECUTABLE( alpr-tool tools/alpr_tool.cpp )
 ENDIF()
 
 if (WIN32) 
@@ -156,6 +158,15 @@ ENDIF()
 
 if (NOT IOS)
   TARGET_LINK_LIBRARIES(alpr
+    ${OPENALPR_LIB}
+    ${STATE_DETECTION_LIB}
+    support
+    video
+    ${OpenCV_LIBS}
+    ${Tesseract_LIBRARIES}
+    ${Extra_LIBS}
+  )
+  TARGET_LINK_LIBRARIES(alpr-tool
     ${OPENALPR_LIB}
     ${STATE_DETECTION_LIB}
     support
