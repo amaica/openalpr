@@ -1,11 +1,14 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/photo/photo.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
 #include <tclap/CmdLine.h>
 #include <fstream>
 #include <sstream>
 #include <map>
 #include <iostream>
+#include <iomanip>
+#include <limits>
 #include <climits>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -98,14 +101,26 @@ struct ConfigWriter {
 
 struct RoiState {
   bool drawing=false;
-  Point start, end;
-  Rect draft;
-  Rect applied;
+  Point start;
+  Rect draft;     // in original coords
+  Rect applied;   // in original coords (source of truth)
   bool dirty=false;
+  bool defaultUsed=false;
+};
+
+struct PrewarpState {
+  bool enabled=false;
+  bool editing=false;
+  bool dirty=false;
+  bool valid=false;
+  std::vector<Point2f> ptsOrig; // size 4, in original coords
+  Mat homography;
 };
 
 static RoiState g_roiState;
+static PrewarpState g_prewarpState;
 static bool g_saveRequested = false;
+static bool g_saveAndExitRequested = false;
 static bool g_quitRequested = false;
 
 struct DisplayMapper {
@@ -169,6 +184,49 @@ static Rect defaultRoi(const Mat& frame) {
   return Rect(0, frame.rows/2, frame.cols, frame.rows/2);
 }
 
+static vector<Point2f> defaultPrewarpPts(const Mat& frame) {
+  return {
+    Point2f(0.0f, 0.0f),
+    Point2f(static_cast<float>(frame.cols - 1), 0.0f),
+    Point2f(static_cast<float>(frame.cols - 1), static_cast<float>(frame.rows - 1)),
+    Point2f(0.0f, static_cast<float>(frame.rows - 1))
+  };
+}
+
+static void ensurePrewarpHomography(PrewarpState& st, const Size& sz) {
+  if (st.ptsOrig.size() != 4) { st.valid = false; return; }
+  vector<Point2f> dst = defaultPrewarpPts(Mat(sz, CV_8UC1));
+  st.homography = getPerspectiveTransform(st.ptsOrig, dst);
+  st.valid = !st.homography.empty();
+}
+
+static string derivePlanarStringFromHomography(const Mat& H, const Size& sz) {
+  if (H.empty()) return "";
+  try {
+    Mat K = Mat::eye(3,3,CV_64F);
+    vector<Mat> Rs, ts, ns;
+    int solutions = decomposeHomographyMat(H, K, Rs, ts, ns);
+    if (solutions <= 0) return "";
+    Mat R = Rs[0];
+    Mat t = ts[0];
+    double rx = atan2(R.at<double>(2,1), R.at<double>(2,2));
+    double ry = atan2(-R.at<double>(2,0), sqrt(R.at<double>(2,1)*R.at<double>(2,1) + R.at<double>(2,2)*R.at<double>(2,2)));
+    double rz = atan2(R.at<double>(1,0), R.at<double>(0,0));
+    double panX = t.at<double>(0);
+    double panY = t.at<double>(1);
+    double dist = t.at<double>(2);
+    double stretchX = 1.0;
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(6)
+        << "planar," << sz.width << "," << sz.height << ","
+        << rx << "," << ry << "," << rz << ","
+        << stretchX << "," << dist << "," << panX << "," << panY;
+    return oss.str();
+  } catch (...) {
+    return "";
+  }
+}
+
 static void ensureParentDir(const string& path) {
   auto pos = path.find_last_of('/');
   if (pos == string::npos) return;
@@ -202,16 +260,20 @@ struct Track {
 };
 
 static vector<Button> buildButtons(int width) {
-  const int btnW = 110;
+  const int btnW = 128;
   const int btnH = 32;
-  const int pad = 8;
-  vector<string> labels = {"PLAY","PAUSE","STOP","SAVE ROI","RESET ROI","QUIT"};
+  const int pad = 6;
+  vector<string> labels = {"PLAY","PAUSE","STOP","SAVE ROI","SAVE & EXIT","RESET","PREWARP ON/OFF","EDIT PREWARP","QUIT"};
   vector<Button> btns;
   int x = pad;
   int y = pad;
   for (auto& l : labels) {
     btns.push_back({l, Rect(x,y,btnW,btnH)});
     x += btnW + pad;
+    if (x + btnW > width) { // wrap if window too small
+      x = pad;
+      y += btnH + pad;
+    }
   }
   return btns;
 }
@@ -239,6 +301,7 @@ struct MouseCtx {
   vector<Button>* buttons;
   PlayState* state;
   DisplayMapper* mapper;
+  PrewarpState* prewarp;
 };
 
 struct SpeedConfig {
@@ -261,6 +324,7 @@ static void mouseCb(int event, int x, int y, int, void* userdata) {
   auto& buttons = *payload->buttons;
   PlayState& state = *payload->state;
   DisplayMapper& mapper = *payload->mapper;
+  PrewarpState& prewarp = *payload->prewarp;
 
   if (event == EVENT_LBUTTONDOWN) {
     // Check buttons first
@@ -270,30 +334,47 @@ static void mouseCb(int event, int x, int y, int, void* userdata) {
         else if (b.label == "PAUSE") state = STATE_PAUSED;
         else if (b.label == "STOP") state = STATE_STOPPED;
         else if (b.label == "SAVE ROI") { g_roiState.dirty = true; g_saveRequested = true; }
-        else if (b.label == "RESET ROI") { g_roiState.applied = Rect(); g_roiState.draft = Rect(); g_roiState.dirty = false; }
+        else if (b.label == "SAVE & EXIT") { g_roiState.dirty = true; g_saveRequested = true; g_saveAndExitRequested = true; }
+        else if (b.label == "RESET") { g_roiState.applied = Rect(); g_roiState.draft = Rect(); g_roiState.dirty = false; g_roiState.defaultUsed=false; prewarp.enabled=false; prewarp.dirty=true; prewarp.ptsOrig.clear(); prewarp.valid=false; }
+        else if (b.label == "PREWARP ON/OFF") { prewarp.enabled = !prewarp.enabled; prewarp.dirty = true; }
+        else if (b.label == "EDIT PREWARP") { prewarp.editing = true; }
         else if (b.label == "QUIT") { g_quitRequested = true; state = STATE_STOPPED; cout << "QUIT CLICKED\n"; }
         return;
       }
+    }
+    if (prewarp.editing) {
+      Point p = mapper.dispToOrig(Point(x,y));
+      if (prewarp.ptsOrig.size() < 4) prewarp.ptsOrig.push_back(p);
+      else {
+        // move nearest point
+        int idx = 0;
+        double best = std::numeric_limits<double>::max();
+        for (size_t i=0;i<prewarp.ptsOrig.size();++i) {
+          double d = norm(prewarp.ptsOrig[i] - Point2f(p));
+          if (d < best) { best = d; idx = static_cast<int>(i); }
+        }
+        prewarp.ptsOrig[idx] = p;
+      }
+      prewarp.dirty = true;
+      return;
     }
     // Start drawing ROI in display coords, convert to original
     g_roiState.drawing = true;
     Point p = mapper.dispToOrig(Point(x,y));
     g_roiState.start = p;
-    g_roiState.end = p;
+    g_roiState.draft = Rect();
   } else if (event == EVENT_MOUSEMOVE && g_roiState.drawing) {
     Point p = mapper.dispToOrig(Point(x,y));
-    g_roiState.end = p;
-    g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
+    g_roiState.draft = Rect(g_roiState.start, p);
   } else if (event == EVENT_LBUTTONUP) {
     g_roiState.drawing = false;
     Point p = mapper.dispToOrig(Point(x,y));
-    g_roiState.end = p;
-    g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
+    g_roiState.draft = Rect(g_roiState.start, p);
     g_roiState.dirty = true;
   }
 }
 
-static void overlayInfo(Mat& frame, const Rect& roiDisp, const Rect& roiOrig, const DisplayMapper& mapper, const string& confPath, bool dirty, bool defaultUsed) {
+static void overlayInfo(Mat& frame, const Rect& roiDisp, const Rect& roiOrig, const DisplayMapper& mapper, const string& confPath, bool dirty, bool defaultUsed, const PrewarpState& prewarp) {
   if (roiDisp.area() > 0) rectangle(frame, roiDisp, Scalar(0,255,0), 2);
 
   std::ostringstream oss;
@@ -309,7 +390,12 @@ static void overlayInfo(Mat& frame, const Rect& roiDisp, const Rect& roiOrig, co
   if (defaultUsed) oss << " [DEFAULT]";
   if (dirty) oss << " [DIRTY]";
   putText(frame, oss.str(), Point(10, 70), FONT_HERSHEY_SIMPLEX, 0.55, Scalar(255,255,255),1,LINE_AA);
-  putText(frame, confPath, Point(10, 90), FONT_HERSHEY_SIMPLEX, 0.45, Scalar(200,200,200),1,LINE_AA);
+  std::ostringstream ps;
+  ps << "Prewarp: " << (prewarp.enabled ? "ON" : "OFF");
+  if (prewarp.editing) ps << " [EDIT]";
+  if (prewarp.dirty) ps << " [DIRTY]";
+  putText(frame, ps.str(), Point(10, 90), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255,255,0),1,LINE_AA);
+  putText(frame, confPath, Point(10, 110), FONT_HERSHEY_SIMPLEX, 0.45, Scalar(200,200,200),1,LINE_AA);
 }
 
 static bool openCapture(const string& src, VideoCapture& cap) {
@@ -319,6 +405,13 @@ static bool openCapture(const string& src, VideoCapture& cap) {
     return cap.open(idx);
   }
   return cap.open(src);
+}
+
+static Mat applyPrewarpDisplay(const Mat& frame, const PrewarpState& st) {
+  if (!st.enabled || !st.valid || st.homography.empty()) return frame;
+  Mat warped;
+  warpPerspective(frame, warped, st.homography, frame.size(), INTER_LINEAR, BORDER_REPLICATE);
+  return warped;
 }
 
 static void saveRoiToConfig(const Rect& roi, const Mat& frame, ConfigWriter& cfg) {
@@ -354,6 +447,51 @@ static Rect roiFromConfig(const ConfigWriter& cfg, const Mat& frame) {
   return normalizedRect(Rect(x,y,w,h), frame);
 }
 
+static PrewarpState prewarpFromConfig(const ConfigWriter& cfg, const Mat& frame) {
+  PrewarpState st;
+  st.enabled = cfg.get("prewarp_enabled","0") == "1";
+  vector<Point2f> pts(4, Point2f(0,0));
+  bool hasPts = true;
+  for (int i=0;i<4;i++) {
+    std::ostringstream kx, ky;
+    kx << "prewarp_p" << (i+1) << "x";
+    ky << "prewarp_p" << (i+1) << "y";
+    string sx = cfg.get(kx.str(),"");
+    string sy = cfg.get(ky.str(),"");
+    if (sx.empty() || sy.empty()) { hasPts = false; break; }
+    float px = stof(sx);
+    float py = stof(sy);
+    pts[i].x = px * frame.cols;
+    pts[i].y = py * frame.rows;
+  }
+  if (!hasPts) {
+    st.ptsOrig = defaultPrewarpPts(frame);
+  } else {
+    st.ptsOrig = pts;
+  }
+  ensurePrewarpHomography(st, frame.size());
+  return st;
+}
+
+static void savePrewarpToConfig(const PrewarpState& st, const Mat& frame, ConfigWriter& cfg) {
+  cfg.set("prewarp_enabled", st.enabled ? "1" : "0");
+  if (st.ptsOrig.size() == 4) {
+    for (int i=0;i<4;i++) {
+      std::ostringstream kx, ky;
+      kx << "prewarp_p" << (i+1) << "x";
+      ky << "prewarp_p" << (i+1) << "y";
+      float px = st.ptsOrig[i].x / frame.cols;
+      float py = st.ptsOrig[i].y / frame.rows;
+      cfg.set(kx.str(), to_string(px));
+      cfg.set(ky.str(), to_string(py));
+    }
+  }
+  if (st.valid && !st.homography.empty()) {
+    string planar = derivePlanarStringFromHomography(st.homography, frame.size());
+    if (!planar.empty()) cfg.set("prewarp", planar);
+  }
+}
+
 static SpeedConfig loadSpeedConfig(const ConfigWriter& cfg) {
   SpeedConfig s;
   s.enabled = cfg.get("speed_enabled","0") == "1";
@@ -371,10 +509,11 @@ static SpeedConfig loadSpeedConfig(const ConfigWriter& cfg) {
   return s;
 }
 
-static void cmdRoi(const string& source, const string& confPath) {
+static void cmdRoi(const string& source, const string& confPath, bool autoDemo=false, bool autoDemoNoPrewarp=false) {
   ConfigWriter cfg;
   cfg.load(confPath);
   g_saveRequested = false;
+  g_saveAndExitRequested = false;
   g_quitRequested = false;
   if (cfg.lastWritePath.empty()) cfg.lastWritePath = confPath;
   string src = source;
@@ -389,10 +528,10 @@ static void cmdRoi(const string& source, const string& confPath) {
     return;
   }
   namedWindow("alpr-tool roi", WINDOW_AUTOSIZE);
-  auto buttons = buildButtons(800);
+  auto buttons = buildButtons(1280);
   PlayState playState = STATE_PAUSED;
   DisplayMapper mapper;
-  MouseCtx mctx{&buttons, &playState, &mapper};
+  MouseCtx mctx{&buttons, &playState, &mapper, &g_prewarpState};
   setMouseCallback("alpr-tool roi", mouseCb, &mctx);
 
   Rect roiOrig;
@@ -409,8 +548,30 @@ static void cmdRoi(const string& source, const string& confPath) {
   roiOrig = roiFromConfig(cfg, frame);
   if (roiOrig.area() == 0) { roiOrig = defaultRoi(frame); defaultUsed = true; }
   g_roiState.applied = roiOrig;
-  g_roiState.dirty = true;
-  g_saveRequested = true;
+  g_roiState.draft = Rect();
+  g_roiState.dirty = false;
+  g_roiState.defaultUsed = defaultUsed;
+  g_prewarpState = prewarpFromConfig(cfg, frame);
+  if (autoDemo) {
+    g_roiState.applied = normalizedRect(Rect(frame.cols/4, frame.rows/3, frame.cols/2, frame.rows/2), frame);
+    g_roiState.dirty = true;
+    if (!autoDemoNoPrewarp) {
+      g_prewarpState.enabled = true;
+      g_prewarpState.ptsOrig = {
+        Point2f(frame.cols*0.1f, frame.rows*0.2f),
+        Point2f(frame.cols*0.9f, frame.rows*0.15f),
+        Point2f(frame.cols*0.8f, frame.rows*0.85f),
+        Point2f(frame.cols*0.2f, frame.rows*0.9f)
+      };
+      g_prewarpState.dirty = true;
+    } else {
+      g_prewarpState.enabled = false;
+      g_prewarpState.dirty = true;
+    }
+    g_saveRequested = true;
+    g_saveAndExitRequested = true;
+    defaultUsed = false;
+  }
 
   while (true) {
     if (playState == STATE_PLAYING) {
@@ -425,32 +586,58 @@ static void cmdRoi(const string& source, const string& confPath) {
 
     mapper.setOriginal(frame.cols, frame.rows);
 
+    if (g_prewarpState.dirty && !g_prewarpState.editing) {
+      if (g_prewarpState.ptsOrig.empty()) g_prewarpState.ptsOrig = defaultPrewarpPts(frame);
+      ensurePrewarpHomography(g_prewarpState, frame.size());
+      g_prewarpState.dirty = false;
+    }
+
     Rect currentOrig = g_roiState.draft.area() > 0 ? g_roiState.draft : g_roiState.applied;
     currentOrig = normalizedRect(currentOrig, frame);
     if (currentOrig.area() == 0) { currentOrig = defaultRoi(frame); defaultUsed = true; }
 
-    resize(frame, canvas, Size(mapper.dispW, mapper.dispH));
+    Mat shown = g_prewarpState.enabled ? applyPrewarpDisplay(frame, g_prewarpState) : frame;
+    resize(shown, canvas, Size(mapper.dispW, mapper.dispH));
     Rect dispR = mapper.origToDisp(currentOrig);
     display = canvas.clone();
+    // draw prewarp points overlay
+    if (g_prewarpState.ptsOrig.size() == 4) {
+      for (size_t i=0;i<g_prewarpState.ptsOrig.size();++i) {
+        Point pd = mapper.origToDisp(Point(static_cast<int>(g_prewarpState.ptsOrig[i].x), static_cast<int>(g_prewarpState.ptsOrig[i].y)));
+        circle(display, pd, 5, Scalar(0,255,255), FILLED);
+        putText(display, to_string(static_cast<int>(i+1)), Point(pd.x+6, pd.y-6), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255,255),1,LINE_AA);
+      }
+    }
     drawButtons(display, buttons, playState);
-    overlayInfo(display, dispR, currentOrig, mapper, cfg.path.empty() ? confPath : cfg.path, g_roiState.dirty, defaultUsed);
+    overlayInfo(display, dispR, currentOrig, mapper, cfg.path.empty() ? confPath : cfg.path, g_roiState.dirty, defaultUsed, g_prewarpState);
     imshow("alpr-tool roi", display);
     int key = waitKey(30);
     if (key == 'q' || key == 27) break;
     if (key == ' ') playState = (playState == STATE_PLAYING ? STATE_PAUSED : STATE_PLAYING);
     if (key == 's') { g_roiState.dirty = true; g_saveRequested = true; }
-    if (key == 'r') { g_roiState.draft = Rect(); g_roiState.applied = Rect(); g_roiState.dirty = false; }
+    if (key == 'x') { g_roiState.dirty = true; g_saveRequested = true; g_saveAndExitRequested = true; }
+    if (key == 'p') { g_prewarpState.enabled = !g_prewarpState.enabled; g_prewarpState.dirty = true; }
+    if (key == 'e') { g_prewarpState.editing = !g_prewarpState.editing; }
+    if (key == 'r') { g_roiState.draft = Rect(); g_roiState.applied = Rect(); g_roiState.dirty = false; g_prewarpState = prewarpFromConfig(cfg, frame); defaultUsed = false; }
     if (key == '1') { g_roiState.applied = defaultRoi(frame); g_roiState.draft = Rect(); g_roiState.dirty = true; defaultUsed = true; }
     if (g_quitRequested) { cout << "EXITING ROI TOOL\n"; break; }
 
-    if (g_roiState.dirty && g_saveRequested) {
+    if (g_prewarpState.editing && g_prewarpState.ptsOrig.size() == 4) {
+      g_prewarpState.editing = false;
+      g_prewarpState.dirty = true;
+    }
+
+    if ((g_roiState.dirty || g_prewarpState.dirty) && g_saveRequested) {
       Rect saveR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : currentOrig;
       saveRoiToConfig(saveR, frame, cfg);
+      ensurePrewarpHomography(g_prewarpState, frame.size());
+      savePrewarpToConfig(g_prewarpState, frame, cfg);
       cfg.save();
       g_roiState.applied = saveR;
       g_roiState.draft = Rect();
       g_roiState.dirty = false;
       g_saveRequested = false;
+      defaultUsed = false;
       cout << "ROI saved to " << cfg.lastWritePath << " (percent)"
            << " px=(" << saveR.x << "," << saveR.y << "," << saveR.width << "," << saveR.height << ")"
            << " perc=("
@@ -461,9 +648,29 @@ static void cmdRoi(const string& source, const string& confPath) {
       cout << "orig=" << frame.cols << "x" << frame.rows
            << " disp=" << mapper.dispW << "x" << mapper.dispH
            << " scale=" << mapper.scale << " off_x=" << mapper.offX << " off_y=" << mapper.offY << "\n";
+      if (g_prewarpState.valid && g_prewarpState.ptsOrig.size() == 4) {
+        cout << "PREWARP pts(px)="
+             << " (" << g_prewarpState.ptsOrig[0].x << "," << g_prewarpState.ptsOrig[0].y << ")"
+             << " (" << g_prewarpState.ptsOrig[1].x << "," << g_prewarpState.ptsOrig[1].y << ")"
+             << " (" << g_prewarpState.ptsOrig[2].x << "," << g_prewarpState.ptsOrig[2].y << ")"
+             << " (" << g_prewarpState.ptsOrig[3].x << "," << g_prewarpState.ptsOrig[3].y << ")" << "\n";
+        cout << "PREWARP pts(%)="
+             << " (" << g_prewarpState.ptsOrig[0].x/frame.cols << "," << g_prewarpState.ptsOrig[0].y/frame.rows << ")"
+             << " (" << g_prewarpState.ptsOrig[1].x/frame.cols << "," << g_prewarpState.ptsOrig[1].y/frame.rows << ")"
+             << " (" << g_prewarpState.ptsOrig[2].x/frame.cols << "," << g_prewarpState.ptsOrig[2].y/frame.rows << ")"
+             << " (" << g_prewarpState.ptsOrig[3].x/frame.cols << "," << g_prewarpState.ptsOrig[3].y/frame.rows << ")" << "\n";
+        cout << "PREWARP enabled=" << (g_prewarpState.enabled ? "1" : "0") << "\n";
+        string planar = derivePlanarStringFromHomography(g_prewarpState.homography, frame.size());
+        if (!planar.empty()) cout << "PREWARP planar=" << planar << "\n";
+      }
+      if (g_saveAndExitRequested) {
+        cout << "SAVE & EXIT requested\n";
+        break;
+      }
     }
 
     if (key == 'p') playState = STATE_PAUSED;
+    if (g_saveAndExitRequested && !g_saveRequested && !g_roiState.dirty && !g_prewarpState.dirty) break;
   }
   try { destroyWindow("alpr-tool roi"); } catch (...) { cv::destroyAllWindows(); }
 }
@@ -611,7 +818,20 @@ static Rect plateRect(const AlprPlateResult& p) {
   return Rect(minx, miny, maxx-minx, maxy-miny);
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath) {
+static bool getTimeSeconds(VideoCapture& cap, int frameIdx, double fpsReported, bool fpsValid, double& tOut) {
+  double tsMs = cap.get(CAP_PROP_POS_MSEC);
+  if (tsMs > 0) {
+    tOut = tsMs / 1000.0;
+    return true;
+  }
+  if (fpsValid && fpsReported > 0) {
+    tOut = frameIdx / fpsReported;
+    return true;
+  }
+  return false;
+}
+
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest) {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
@@ -631,6 +851,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     cerr << "Could not load ALPR with config: " << confPath << endl;
     return;
   }
+  if (selfTest) speedCfg.enabled = true;
   ofstream logFile;
   if (!logPath.empty()) {
     ensureParentDir(logPath);
@@ -662,7 +883,30 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
-    AlprResults results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
+    AlprResults results;
+    if (selfTest) {
+      results.total_processing_time_ms = 0;
+      results.img_width = frame.cols;
+      results.img_height = frame.rows;
+      AlprPlateResult pr;
+      int startY = roi.area() > 0 ? roi.y + 10 : static_cast<int>(speedCfg.yA * frame.rows);
+      int endY   = roi.area() > 0 ? roi.y + roi.height - 10 : static_cast<int>(speedCfg.yB * frame.rows);
+      if (endY <= startY) endY = startY + 50;
+      int cycle = 90;
+      double prog = (frameIdx % cycle) / static_cast<double>(cycle-1);
+      int cy = startY + static_cast<int>((endY - startY) * prog);
+      int cx = frame.cols/2;
+      int bw = 100, bh = 50;
+      pr.plate_points[0].x = cx - bw/2; pr.plate_points[0].y = cy - bh/2;
+      pr.plate_points[1].x = cx + bw/2; pr.plate_points[1].y = cy - bh/2;
+      pr.plate_points[2].x = cx + bw/2; pr.plate_points[2].y = cy + bh/2;
+      pr.plate_points[3].x = cx - bw/2; pr.plate_points[3].y = cy + bh/2;
+      pr.bestPlate.characters = "SELFTEST";
+      pr.bestPlate.overall_confidence = 99.0;
+      results.plates.push_back(pr);
+    } else {
+      results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
+    }
     double lineA = speedCfg.yA * frame.rows;
     double lineB = speedCfg.yB * frame.rows;
     if (speedCfg.enabled) {
@@ -676,14 +920,16 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         else emaY = cy;
 
         double tNow = 0.0;
-        bool tOk = false;
-        double tsMs = cap.get(CAP_PROP_POS_MSEC);
-        if (speedCfg.timeSource == "timestamp" && tsMs > 0) { tNow = tsMs/1000.0; tOk = true; }
-        else if (fpsValid) { tNow = frameIdx / fpsReported; tOk = true; }
+        bool tOk = getTimeSeconds(cap, frameIdx, fpsReported, fpsValid, tNow);
 
         if (!crossedA && emaY >= lineA && tOk) {
           crossedA = true;
           tA = tNow;
+          if (speedCfg.log) {
+            std::ostringstream oss; oss << "frame=" << frameIdx << " speed_arm A crossed";
+            cout << oss.str() << endl;
+            if (logFile.good()) logFile << oss.str() << "\n";
+          }
         }
         if (crossedA && !fired && emaY >= lineB && tOk) {
           double dt = tNow - tA;
@@ -788,6 +1034,8 @@ int main(int argc, char** argv) {
     if (sub == "roi") {
       string conf = "./config/openalpr.conf.defaults";
       string src;
+      bool autoDemo = false;
+      bool autoDemoNoPrewarp = false;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -801,13 +1049,15 @@ int main(int argc, char** argv) {
         };
         if (a.rfind("--conf",0)==0) { eatValue(conf); continue; }
         if (a.rfind("--source",0)==0) { eatValue(src); continue; }
+        if (a == "--auto-demo") { autoDemo = true; continue; }
+        if (a == "--auto-demo-no-prewarp") { autoDemo = true; autoDemoNoPrewarp = true; continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool roi --source <video|device> [--conf <path>]\n";
+          cout << "alpr-tool roi --source <video|device> [--conf <path>] [--auto-demo] [--auto-demo-no-prewarp]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
-      cmdRoi(src, conf);
+      cmdRoi(src, conf, autoDemo, autoDemoNoPrewarp);
       return 0;
     }
     if (sub == "tune") {
@@ -823,6 +1073,7 @@ int main(int argc, char** argv) {
       string conf = "./config/openalpr.conf.defaults";
       string src;
       string log = "artifacts/logs/preview.log";
+      bool selfTest = false;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -833,13 +1084,14 @@ int main(int argc, char** argv) {
         if (a.rfind("--conf",0)==0) { eatValue(conf); continue; }
         if (a.rfind("--source",0)==0) { eatValue(src); continue; }
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
+        if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>]\n";
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--speed-selftest]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
-      cmdPreview(src, conf, log);
+      cmdPreview(src, conf, log, selfTest);
       return 0;
     }
     if (sub == "export-yolo") {
