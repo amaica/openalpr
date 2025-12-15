@@ -242,23 +242,6 @@ struct Button {
   Rect area;
 };
 
-struct Track {
-  int id=0;
-  Rect bbox;
-  double centerY=0.0;
-  double emaCenterY=0.0;
-  bool hasEma=false;
-  bool crossedA=false;
-  double tA=0.0;
-  bool fired=false;
-  double speedKmh=0.0;
-  string reason;
-  string plate;
-  double plateConf=0.0;
-  int lastFrame=0;
-  double lastTsMs=0.0;
-};
-
 static vector<Button> buildButtons(int width) {
   const int btnW = 128;
   const int btnH = 32;
@@ -317,6 +300,44 @@ struct SpeedConfig {
   bool log=false;
   bool requirePlate=true;
 };
+
+struct Track {
+  int id=0;
+  Rect last_bbox;
+  double last_centerY_ema=-1.0;
+  double last_seen_t=0.0;
+  bool crossedA=false;
+  bool crossedB=false;
+  bool fired=false;
+  double tA=0.0;
+  double tB=0.0;
+  double last_speed_kmh=0.0;
+  std::string best_plate_text;
+  double best_plate_conf=-1.0;
+  std::string last_logged_plate_text;
+  double last_logged_t=-1.0;
+};
+
+struct PreviewRuntimeOptions {
+  bool logPlates=false;
+  bool logEvents=true;
+  int logThrottleMs=400;
+  int maxTracks=32;
+  int trackTtlMs=1000;
+};
+
+static double iouRect(const Rect& a, const Rect& b) {
+  int x1 = std::max(a.x, b.x);
+  int y1 = std::max(a.y, b.y);
+  int x2 = std::min(a.x + a.width,  b.x + b.width);
+  int y2 = std::min(a.y + a.height, b.y + b.height);
+  int iw = std::max(0, x2 - x1);
+  int ih = std::max(0, y2 - y1);
+  int inter = iw * ih;
+  int ua = a.width * a.height + b.width * b.height - inter;
+  if (ua <= 0) return 0.0;
+  return static_cast<double>(inter) / static_cast<double>(ua);
+}
 
 static void mouseCb(int event, int x, int y, int, void* userdata) {
   auto* payload = reinterpret_cast<MouseCtx*>(userdata);
@@ -831,7 +852,7 @@ static bool getTimeSeconds(VideoCapture& cap, int frameIdx, double fpsReported, 
   return false;
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest) {
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, const PreviewRuntimeOptions& opts) {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
@@ -858,18 +879,25 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     logFile.open(logPath, ios::out | ios::app);
     if (!logFile.good()) cerr << "Could not open log file: " << logPath << endl;
   }
+  auto logLine = [&](const std::string& s){
+    cout << s << endl;
+    if (logFile.good()) logFile << s << "\n";
+  };
   namedWindow("alpr-tool preview", WINDOW_NORMAL);
   Rect roi;
   bool defaultUsed=false;
   int64 lastTick = getTickCount();
   int frameIdx = 0;
-  double emaY = -1.0;
-  bool crossedA = false;
-  bool fired = false;
-  double tA = 0.0;
-  double lastSpeed = 0.0;
   double fpsReported = cap.get(CAP_PROP_FPS);
   bool fpsValid = fpsReported > 1.0 && fpsReported < 300.0;
+  vector<Track> tracks;
+  int nextTrackId = 1;
+  const double iouThreshold = 0.3;
+  const double throttleSec = std::max(0, opts.logThrottleMs) / 1000.0;
+  const double trackTtlSec = std::max(1, opts.trackTtlMs) / 1000.0;
+  const double tickFreq = getTickFrequency();
+  auto wallSeconds = [&](){ return static_cast<double>(getTickCount()) / tickFreq; };
+  const bool trackingActive = speedCfg.enabled || opts.logPlates;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
@@ -883,75 +911,146 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
+    double lineA = (roi.area() > 0 ? roi.y + speedCfg.yA * roi.height : speedCfg.yA * frame.rows);
+    double lineB = (roi.area() > 0 ? roi.y + speedCfg.yB * roi.height : speedCfg.yB * frame.rows);
+
     AlprResults results;
     if (selfTest) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
       results.img_height = frame.rows;
-      AlprPlateResult pr;
-      int startY = roi.area() > 0 ? roi.y + 10 : static_cast<int>(speedCfg.yA * frame.rows);
-      int endY   = roi.area() > 0 ? roi.y + roi.height - 10 : static_cast<int>(speedCfg.yB * frame.rows);
+      int startY = static_cast<int>(std::max(5.0, lineA - 80.0));
+      int endY   = static_cast<int>(std::min((roi.area() > 0 ? roi.y + roi.height - 5.0 : frame.rows - 5.0), lineB + 120.0));
       if (endY <= startY) endY = startY + 50;
       int cycle = 90;
-      double prog = (frameIdx % cycle) / static_cast<double>(cycle-1);
-      int cy = startY + static_cast<int>((endY - startY) * prog);
-      int cx = frame.cols/2;
-      int bw = 100, bh = 50;
-      pr.plate_points[0].x = cx - bw/2; pr.plate_points[0].y = cy - bh/2;
-      pr.plate_points[1].x = cx + bw/2; pr.plate_points[1].y = cy - bh/2;
-      pr.plate_points[2].x = cx + bw/2; pr.plate_points[2].y = cy + bh/2;
-      pr.plate_points[3].x = cx - bw/2; pr.plate_points[3].y = cy + bh/2;
-      pr.bestPlate.characters = "SELFTEST";
-      pr.bestPlate.overall_confidence = 99.0;
-      results.plates.push_back(pr);
+      for (int i=0;i<3;i++) {
+        AlprPlateResult pr;
+        double prog = ((frameIdx + i*15) % cycle) / static_cast<double>(cycle-1);
+        int cy = startY + static_cast<int>((endY - startY) * prog);
+        int cx = frame.cols/2 + (i-1)*80;
+        int bw = 100, bh = 50;
+        pr.plate_points[0].x = cx - bw/2; pr.plate_points[0].y = cy - bh/2;
+        pr.plate_points[1].x = cx + bw/2; pr.plate_points[1].y = cy - bh/2;
+        pr.plate_points[2].x = cx + bw/2; pr.plate_points[2].y = cy + bh/2;
+        pr.plate_points[3].x = cx - bw/2; pr.plate_points[3].y = cy + bh/2;
+        std::ostringstream t; t << "SELF" << (i+1);
+        pr.bestPlate.characters = t.str();
+        pr.bestPlate.overall_confidence = 99.0;
+        results.plates.push_back(pr);
+      }
     } else {
       results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
     }
-    double lineA = speedCfg.yA * frame.rows;
-    double lineB = speedCfg.yB * frame.rows;
-    if (speedCfg.enabled) {
+    double tNow = 0.0;
+    bool tOk = getTimeSeconds(cap, frameIdx, fpsReported, fpsValid, tNow);
+    if (!tOk) {
+      if (fpsValid && fpsReported > 0) {
+        tNow = frameIdx / fpsReported;
+        tOk = true;
+      } else {
+        tNow = wallSeconds();
+        tOk = true;
+      }
+    }
+
+    if (trackingActive) {
       for (const auto& plate : results.plates) {
         Rect pr = plateRect(plate);
         Point c((pr.x+pr.width/2), (pr.y+pr.height/2));
-        if (roi.area() > 0 && !roi.contains(c)) continue; // ROI gate
         double cy = c.y;
-        if (emaY < 0) emaY = cy;
-        else if (speedCfg.smoothing == "ema") emaY = speedCfg.emaAlpha * cy + (1.0 - speedCfg.emaAlpha) * emaY;
-        else emaY = cy;
+        int bestIdx = -1;
+        double bestIou = iouThreshold;
+        for (size_t i=0;i<tracks.size();++i) {
+          double iou = iouRect(tracks[i].last_bbox, pr);
+          if (iou > bestIou) { bestIou = iou; bestIdx = static_cast<int>(i); }
+        }
+        if (bestIdx == -1) {
+          if (static_cast<int>(tracks.size()) >= opts.maxTracks) continue;
+          Track nt;
+          nt.id = nextTrackId++;
+          nt.last_bbox = pr;
+          nt.last_centerY_ema = cy;
+          nt.last_seen_t = tNow;
+          nt.best_plate_text = plate.bestPlate.characters;
+          nt.best_plate_conf = plate.bestPlate.overall_confidence;
+          tracks.push_back(nt);
+          bestIdx = static_cast<int>(tracks.size()) - 1;
+        }
+        Track& tr = tracks[bestIdx];
+        double prevEma = (tr.last_centerY_ema < 0 ? cy : tr.last_centerY_ema);
+        double newEma = cy;
+        if (speedCfg.smoothing == "ema") newEma = speedCfg.emaAlpha * cy + (1.0 - speedCfg.emaAlpha) * prevEma;
+        tr.last_centerY_ema = newEma;
+        tr.last_bbox = pr;
+        tr.last_seen_t = tNow;
+        if (!plate.bestPlate.characters.empty() && plate.bestPlate.overall_confidence >= tr.best_plate_conf) {
+          tr.best_plate_text = plate.bestPlate.characters;
+          tr.best_plate_conf = plate.bestPlate.overall_confidence;
+        }
 
-        double tNow = 0.0;
-        bool tOk = getTimeSeconds(cap, frameIdx, fpsReported, fpsValid, tNow);
+        bool inRoi = roi.area() == 0 || roi.contains(c);
+        string plateText = !plate.bestPlate.characters.empty() ? plate.bestPlate.characters :
+                           (!tr.best_plate_text.empty() ? tr.best_plate_text : string("<none>"));
+        double plateConf = plate.bestPlate.overall_confidence >= 0 ? plate.bestPlate.overall_confidence : tr.best_plate_conf;
 
-        if (!crossedA && emaY >= lineA && tOk) {
-          crossedA = true;
-          tA = tNow;
-          if (speedCfg.log) {
-            std::ostringstream oss; oss << "frame=" << frameIdx << " speed_arm A crossed";
-            cout << oss.str() << endl;
-            if (logFile.good()) logFile << oss.str() << "\n";
+        if (opts.logPlates && inRoi) {
+          bool shouldLog = plateText != tr.last_logged_plate_text || (tr.last_logged_t < 0 || (tNow - tr.last_logged_t) >= throttleSec);
+          if (shouldLog) {
+            std::ostringstream oss;
+            oss << "frame=" << frameIdx
+                << " track=" << tr.id
+                << " plate=" << plateText
+                << " conf=" << plateConf
+                << " bbox=" << pr.x << "," << pr.y << "," << pr.width << "," << pr.height;
+            logLine(oss.str());
+            tr.last_logged_plate_text = plateText;
+            tr.last_logged_t = tNow;
           }
         }
-        if (crossedA && !fired && emaY >= lineB && tOk) {
-          double dt = tNow - tA;
-          if (dt > 0 && speedCfg.dist_m > 0) {
-            double mps = speedCfg.dist_m / dt;
-            double kmh = mps * 3.6;
-            if (kmh >= speedCfg.minKmh && kmh <= speedCfg.maxKmh) {
-              fired = true;
-              lastSpeed = kmh;
-              std::ostringstream oss;
-              oss << "frame=" << frameIdx
-                  << " plate=" << plate.bestPlate.characters
-                  << " conf=" << plate.bestPlate.overall_confidence
-                  << " speed_kmh=" << kmh
-                  << " dt=" << dt
-                  << " mode=lines crossed=A->B";
-              cout << oss.str() << endl;
-              if (logFile.good()) logFile << oss.str() << "\n";
+
+        if (speedCfg.enabled && inRoi && tOk) {
+          if (!tr.crossedA && prevEma < lineA && newEma >= lineA) {
+            tr.crossedA = true;
+            tr.tA = tNow;
+            if (opts.logEvents && speedCfg.log) {
+              std::ostringstream oss; oss << "frame=" << frameIdx << " track=" << tr.id << " arm=A crossed";
+              logLine(oss.str());
+            }
+          }
+          if (tr.crossedA && !tr.fired && prevEma < lineB && newEma >= lineB) {
+            double dt = tNow - tr.tA;
+            if (dt > 0 && speedCfg.dist_m > 0) {
+              double mps = speedCfg.dist_m / dt;
+              double kmh = mps * 3.6;
+              if (kmh >= speedCfg.minKmh && kmh <= speedCfg.maxKmh) {
+                bool plateOk = !speedCfg.requirePlate || !tr.best_plate_text.empty() || !plateText.empty();
+                if (plateOk) {
+                  tr.fired = true;
+                  tr.crossedB = true;
+                  tr.tB = tNow;
+                  tr.last_speed_kmh = kmh;
+                  if (opts.logEvents && speedCfg.log) {
+                    std::ostringstream oss;
+                    oss << "frame=" << frameIdx
+                        << " track=" << tr.id
+                        << " plate=" << plateText
+                        << " conf=" << plateConf
+                        << " speed_kmh=" << kmh
+                        << " dt=" << dt
+                        << " mode=lines crossed=A->B";
+                    logLine(oss.str());
+                  }
+                }
+              }
             }
           }
         }
       }
+
+      // Expire old tracks
+      tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [&](const Track& t){
+        return (tNow - t.last_seen_t) > trackTtlSec;
+      }), tracks.end());
     } else {
       drawResults(frame, results);
     }
@@ -965,9 +1064,17 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       std::ostringstream so;
       so << "speed lines A=" << speedCfg.yA*100 << "% B=" << speedCfg.yB*100 << "% dist=" << speedCfg.dist_m << "m";
       putText(frame, so.str(), Point(10, 60), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255,255,255),1,LINE_AA);
-      if (fired) {
-        std::ostringstream ss; ss << lastSpeed << " km/h";
-        putText(frame, ss.str(), Point(10,80), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0,255,255),2,LINE_AA);
+    }
+    if (trackingActive) {
+      for (const auto& tr : tracks) {
+        Scalar color = tr.fired ? Scalar(0,255,255) : Scalar(0,0,255);
+        rectangle(frame, tr.last_bbox, color, 2);
+        std::ostringstream tid; tid << "T" << tr.id;
+        putText(frame, tid.str(), Point(tr.last_bbox.x, std::max(0, tr.last_bbox.y-5)), FONT_HERSHEY_SIMPLEX, 0.5, color, 1, LINE_AA);
+        if (tr.fired) {
+          std::ostringstream ss; ss << std::fixed << setprecision(1) << tr.last_speed_kmh << " km/h";
+          putText(frame, ss.str(), Point(tr.last_bbox.x, tr.last_bbox.y + tr.last_bbox.height + 15), FONT_HERSHEY_SIMPLEX, 0.5, color, 2, LINE_AA);
+        }
       }
     }
     if (defaultUsed) putText(frame, "ROI DEFAULT (lower half)", Point(10,40), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255,255),1,LINE_AA);
@@ -1074,6 +1181,7 @@ int main(int argc, char** argv) {
       string src;
       string log = "artifacts/logs/preview.log";
       bool selfTest = false;
+      PreviewRuntimeOptions opts;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -1085,13 +1193,18 @@ int main(int argc, char** argv) {
         if (a.rfind("--source",0)==0) { eatValue(src); continue; }
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
+        if (a.rfind("--log-plates",0)==0) { string v; eatValue(v); opts.logPlates = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--log-events",0)==0) { string v; eatValue(v); opts.logEvents = (v!="0"&&v!="false"); continue; }
+        if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
+        if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
+        if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--speed-selftest]\n";
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--speed-selftest] [--log-plates 0|1] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
-      cmdPreview(src, conf, log, selfTest);
+      cmdPreview(src, conf, log, selfTest, opts);
       return 0;
     }
     if (sub == "export-yolo") {
