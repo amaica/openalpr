@@ -144,6 +144,13 @@ namespace alpr
       float motoAspectRatioMin;
       float motoAspectRatioMax;
 
+      // ROI config (percent-based)
+      bool roiEnabled;
+      float roiX;
+      float roiY;
+      float roiWidth;
+      float roiHeight;
+
       std::string postProcessRegexLetters;
       std::string postProcessRegexNumbers;
 

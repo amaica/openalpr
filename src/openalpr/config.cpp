@@ -247,6 +247,12 @@ namespace alpr
     motoAspectRatioMin = getFloat(ini, defaultIni, "", "moto_aspect_ratio_min", 0.9f);
     motoAspectRatioMax = getFloat(ini, defaultIni, "", "moto_aspect_ratio_max", 2.2f);
 
+    roiEnabled = getBoolean(ini, defaultIni, "", "enable_roi", false);
+    roiX = getFloat(ini, defaultIni, "", "roi_x", 0.0f);
+    roiY = getFloat(ini, defaultIni, "", "roi_y", 0.0f);
+    roiWidth = getFloat(ini, defaultIni, "", "roi_width", 1.0f);
+    roiHeight = getFloat(ini, defaultIni, "", "roi_height", 1.0f);
+
     debugGeneral = 	getBoolean(ini, defaultIni, "", "debug_general",		false);
     debugTiming = 	getBoolean(ini, defaultIni, "", "debug_timing",		false);
     debugPrewarp = 	getBoolean(ini, defaultIni, "", "debug_prewarp",		false);

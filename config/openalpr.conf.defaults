@@ -75,6 +75,13 @@ vehicle_profile_mode = auto
 moto_aspect_ratio_min = 0.9
 moto_aspect_ratio_max = 2.2
 
+; Optional ROI (percent of frame). If disabled, full frame is used.
+enable_roi = 0
+roi_x = 0.0
+roi_y = 0.0
+roi_width = 1.0
+roi_height = 1.0
+
 ; Bypasses plate detection.  If this is set to 1, the library assumes that each region provided is a likely plate area.
 skip_detection = 0
 
