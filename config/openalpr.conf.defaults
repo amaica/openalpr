@@ -1,6 +1,6 @@
 
 ; Specify the path to the runtime data directory
-runtime_dir = ${CMAKE_INSTALL_PREFIX}/share/openalpr/runtime_data
+runtime_dir = /usr/share/openalpr/runtime_data
 
 
 ocr_img_size_percent = 1.33333333
@@ -35,16 +35,36 @@ detection_strictness = 3
 max_detection_input_width = 1280
 max_detection_input_height = 720
 
-; detector is the technique used to find license plate regions in an image.  Value can be set to
+; detector is the technique used to find license plate regions in an image.
+; detector_type can be:
+;   auto (default): tenta YOLO, se falhar usa classic
+;   yolo: força YOLO (logará erro e cai para classic se indisponível)
+;   classic: força detector clássico
+detector_type = auto
+; classic modes:
 ; lbpcpu    - default LBP-based detector uses the system CPU  
 ; lbpgpu    - LBP-based detector that uses Nvidia GPU to increase recognition speed.
 ; lbpopencl - LBP-based detector that uses OpenCL GPU to increase recognition speed.  Requires OpenCV 3.0
 ; morphcpu  - Experimental detector that detects white rectangles in an image.  Does not require training.
 detector = lbpcpu
+; YOLO options (only when detector_type=yolo)
+yolo_model_path =
+yolo_input_width = 640
+yolo_input_height = 640
+yolo_conf_threshold = 0.25
+yolo_nms_threshold = 0.45
+yolo_min_detections = 1
+detector_fallback_classic = 1
 
 ; If set to true, all results must match a postprocess text pattern if a pattern is available.  
 ; If not, the result is disqualified. 
 must_match_pattern = 0
+
+; Brazil hybrid pipeline (br2 -> optional eu/ad -> br)
+br_enable_hybrid = 1
+br_hybrid_order = br2,br
+br_hybrid_fallback_region = eu:ad
+br_hybrid_min_confidence = 70
 
 ; Bypasses plate detection.  If this is set to 1, the library assumes that each region provided is a likely plate area.
 skip_detection = 0

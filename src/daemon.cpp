@@ -13,6 +13,7 @@
 #include "alpr.h"
 #include "openalpr/cjson.h"
 #include "support/tinythread.h"
+#include "daemon/process_worker_pool.h"
 #include <curl/curl.h>
 #include "support/timing.h"
 
@@ -50,6 +51,7 @@ struct CaptureThreadData
   std::string site_id;
   int camera_id;
   int analysis_threads;
+  int process_workers;
   
   bool clock_on;
   
@@ -90,6 +92,7 @@ int main( int argc, const char** argv )
   bool noDaemon = false;
   bool clockOn = false;
   std::string logFile;
+  int process_workers = 0;
   
   std::string configDir;
 
@@ -97,6 +100,7 @@ int main( int argc, const char** argv )
 
   TCLAP::ValueArg<std::string> configDirArg("","config","Path to the openalpr config directory that contains alprd.conf and openalpr.conf. (Default: /etc/openalpr/)",false, "/etc/openalpr/" ,"config_file");
   TCLAP::ValueArg<std::string> logFileArg("l","log","Log file to write to.  Default=" + DEFAULT_LOG_FILE_PATH,false, DEFAULT_LOG_FILE_PATH ,"topN");
+  TCLAP::ValueArg<int> processWorkersArg("","proc-workers","Number of process-based workers per stream. 0 keeps current threaded mode.",false, 0 ,"workers");
 
   TCLAP::SwitchArg daemonOffSwitch("f","foreground","Set this flag for debugging.  Disables forking the process as a daemon and runs in the foreground.  Default=off", cmd, false);
   TCLAP::SwitchArg clockSwitch("","clock","Display timing information to log.  Default=off", cmd, false);
@@ -106,6 +110,7 @@ int main( int argc, const char** argv )
     
     cmd.add( configDirArg );
     cmd.add( logFileArg );
+    cmd.add( processWorkersArg );
 
     
     if (cmd.parse( argc, argv ) == false)
@@ -122,6 +127,7 @@ int main( int argc, const char** argv )
     logFile = logFileArg.getValue();
     noDaemon = daemonOffSwitch.getValue();
     clockOn = clockSwitch.getValue();
+    process_workers = processWorkersArg.getValue();
   }
   catch (TCLAP::ArgException &e)    // catch any exceptions
   {
@@ -206,6 +212,7 @@ int main( int argc, const char** argv )
       tdata->company_id = daemon_config.company_id;
       tdata->site_id = daemon_config.site_id;
       tdata->analysis_threads = daemon_config.analysis_threads;
+      tdata->process_workers = process_workers;
       tdata->top_n = daemon_config.topn;
       tdata->pattern = daemon_config.pattern;
       tdata->clock_on = clockOn;
@@ -322,40 +329,132 @@ void streamRecognitionThread(void* arg)
   LOG4CPLUS_INFO(logger, "pattern: " << tdata->pattern);
   LOG4CPLUS_INFO(logger, "Stream " << tdata->camera_id << ": " << tdata->stream_url);
   
-  /* Create processing threads */
-  const int num_threads = tdata->analysis_threads;
-  tthread::thread* threads[num_threads];
-
-  for (int i = 0; i < num_threads; i++) {
-      LOG4CPLUS_INFO(logger, "Spawning Thread " << i );
-      tthread::thread* t = new tthread::thread(processingThread, (void*) tdata);
-      threads[i] = t;
-  }
-  
-  cv::Mat frame;
-  LoggingVideoBuffer videoBuffer(logger);
-  videoBuffer.connect(tdata->stream_url, 5);
-  LOG4CPLUS_INFO(logger, "Starting camera " << tdata->camera_id);
-  
-  while (daemon_active)
+  if (tdata->process_workers > 0)
   {
-    std::vector<cv::Rect> regionsOfInterest;
-    int response = videoBuffer.getLatestFrame(&frame, regionsOfInterest);
-    
-    if (response != -1) {
-      if (framesQueue.empty()) {
-        framesQueue.push(frame.clone());
+    ProcessWorkerParams params;
+    params.country = tdata->country_code;
+    params.configFile = tdata->config_file;
+    params.templatePattern = tdata->pattern;
+    params.topn = tdata->top_n;
+    params.detectRegion = false;
+    params.debug = false;
+
+    ProcessWorkerPool pool(params, tdata->process_workers);
+    if (!pool.start())
+    {
+      LOG4CPLUS_FATAL(logger, "Failed to start process worker pool");
+      delete tdata;
+      return;
+    }
+
+    cv::Mat frame;
+    LoggingVideoBuffer videoBuffer(logger);
+    videoBuffer.connect(tdata->stream_url, 5);
+    LOG4CPLUS_INFO(logger, "Starting camera (process pool) " << tdata->camera_id);
+
+    while (daemon_active)
+    {
+      std::vector<cv::Rect> regionsOfInterest;
+      int response = videoBuffer.getLatestFrame(&frame, regionsOfInterest);
+
+      if (response != -1)
+      {
+        std::stringstream uuid_ss;
+        uuid_ss << tdata->site_id << "-cam" << tdata->camera_id << "-" << getEpochTimeMs();
+        std::string uuid = uuid_ss.str();
+
+        if (!pool.dispatch(frame, uuid))
+        {
+          // Pool busy; drop frame to avoid backlog
+          usleep(5000);
+        }
       }
+
+      std::vector<ProcessWorkerPool::CompletedJob> completed = pool.poll(0);
+      for (size_t i = 0; i < completed.size(); i++)
+      {
+        if (completed[i].json.size() == 0)
+          continue;
+        AlprResults results = Alpr::fromJson(completed[i].json);
+        if (results.plates.size() == 0)
+          continue;
+
+        if (tdata->clock_on)
+          LOG4CPLUS_INFO(logger, "Camera " << tdata->camera_id << " processed frame in: " << results.total_processing_time_ms << " ms.");
+
+        // Save image if required
+        if (tdata->output_images)
+        {
+          std::stringstream ss;
+          ss << tdata->output_image_folder << "/" << completed[i].jobId << ".jpg";
+          cv::imwrite(ss.str(), completed[i].frame);
+        }
+
+        cJSON *root = cJSON_Parse(completed[i].json.c_str());
+        cJSON_AddStringToObject(root,	"uuid",		completed[i].jobId.c_str());
+        cJSON_AddNumberToObject(root,	"camera_id",	tdata->camera_id);
+        cJSON_AddStringToObject(root, 	"site_id", 	tdata->site_id.c_str());
+        cJSON_AddNumberToObject(root,	"img_width",	results.img_width);
+        cJSON_AddNumberToObject(root,	"img_height",	results.img_height);
+
+        if (tdata->company_id.length() > 0)
+          cJSON_AddStringToObject(root, 	"company_id", 	tdata->company_id.c_str());
+
+        char *out;
+        out=cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+
+        std::string responseJson(out);
+        free(out);
+
+        writeToQueue(responseJson);
+      }
+
+      usleep(5000);
+    }
+
+    pool.stop();
+    videoBuffer.disconnect();
+    LOG4CPLUS_INFO(logger, "Video processing ended");
+    delete tdata;
+  }
+  else
+  {
+    /* Create processing threads */
+    const int num_threads = tdata->analysis_threads;
+    tthread::thread* threads[num_threads];
+
+    for (int i = 0; i < num_threads; i++) {
+        LOG4CPLUS_INFO(logger, "Spawning Thread " << i );
+        tthread::thread* t = new tthread::thread(processingThread, (void*) tdata);
+        threads[i] = t;
     }
     
-    usleep(10000);
-  }
-  
-  videoBuffer.disconnect();
-  LOG4CPLUS_INFO(logger, "Video processing ended");
-  delete tdata;
-  for (int i = 0; i < num_threads; i++) {
-    delete threads[i];
+    cv::Mat frame;
+    LoggingVideoBuffer videoBuffer(logger);
+    videoBuffer.connect(tdata->stream_url, 5);
+    LOG4CPLUS_INFO(logger, "Starting camera " << tdata->camera_id);
+    
+    while (daemon_active)
+    {
+      std::vector<cv::Rect> regionsOfInterest;
+      int response = videoBuffer.getLatestFrame(&frame, regionsOfInterest);
+      
+      if (response != -1) {
+        if (framesQueue.empty()) {
+          framesQueue.push(frame.clone());
+        }
+      }
+      
+      usleep(10000);
+    }
+    
+    videoBuffer.disconnect();
+    LOG4CPLUS_INFO(logger, "Video processing ended");
+    delete tdata;
+    for (int i = 0; i < num_threads; i++) {
+      delete threads[i];
+    }
   }
 }
 

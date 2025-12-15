@@ -82,6 +82,9 @@ ENDIF()
 
 include_directories(${Tesseract_INCLUDE_DIRS})
 
+# Eigen is required by detection components; ensure imported target is defined.
+find_package(Eigen3 REQUIRED NO_MODULE)
+
 IF(OpenCV_FRAMEWORK_PATH)
   MESSAGE(STATUS "Using OpenCV iOS framework: ${OpenCV_FRAMEWORK_PATH}")
   SET(OpenCV_INCLUDE_DIRS "${OpenCV_FRAMEWORK_PATH}/Headers")
@@ -110,7 +113,9 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 add_definitions( -DOPENCV_MAJOR_VERSION=${OpenCV_VERSION_MAJOR})
 
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(./openalpr )
+include_directories(./cli )
 
 IF (WIN32)
 	add_definitions( -DWINDOWS)
@@ -132,7 +137,7 @@ ENDIF()
 
 set(CMAKE_CSS_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall ")
 if (NOT IOS)
-  ADD_EXECUTABLE( alpr  main.cpp )
+  ADD_EXECUTABLE( alpr  main.cpp cli/recognition_worker_process.cpp )
 ENDIF()
 
 if (WIN32) 
@@ -169,6 +174,7 @@ IF (WITH_DAEMON)
     daemon/daemonconfig.cpp 
     daemon/beanstalk.c 
     daemon/beanstalk.cc 
+    daemon/process_worker_pool.cpp
 )
 
   FIND_PACKAGE( CURL REQUIRED )
