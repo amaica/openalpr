@@ -204,7 +204,7 @@ namespace alpr
     Mat grayImg = img;
     if (img.channels() > 2)
       cvtColor( img, grayImg, COLOR_BGR2GRAY );
-
+    
     // Prepare preprocessing buffers (processed separate from detection when needed)
     cv::Mat procColor = img;
     cv::Mat procGray = grayImg;
@@ -241,18 +241,18 @@ namespace alpr
     }
     else
     {
-      // Iterate through each country provided (typically just one)
-      // and aggregate the results if necessary
-      ResultAggregator country_aggregator(MERGE_PICK_BEST, topN, config);
-      for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
-      {
-        if (config->debugGeneral)
-          cout << "Analyzing: " << config->loaded_countries[i] << endl;
+    // Iterate through each country provided (typically just one)
+    // and aggregate the results if necessary
+    ResultAggregator country_aggregator(MERGE_PICK_BEST, topN, config);
+    for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
+    {
+      if (config->debugGeneral)
+        cout << "Analyzing: " << config->loaded_countries[i] << endl;
 
         AlprFullDetails sub_results = runCountryAnalysis(config->loaded_countries[i], detectColor, detectGray, procColor, procGray, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
-        country_aggregator.addResults(sub_results);
-      }
-      response = country_aggregator.getAggregateResults();
+      country_aggregator.addResults(sub_results);
+    }
+    response = country_aggregator.getAggregateResults();
     }
 
     timespec endTime;

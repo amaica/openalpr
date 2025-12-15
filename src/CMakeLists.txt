@@ -112,6 +112,26 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_definitions( -DOPENCV_MAJOR_VERSION=${OpenCV_VERSION_MAJOR})
 
+# ------------------------------------------------------------------
+# Optional ONNX Runtime (vendored in third_party/onnxruntime)
+option(ENABLE_ORT_YOLO "Enable ONNX Runtime backend for YOLO detector" ON)
+set(ORT_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime")
+set(ONNXRUNTIME_LIBS "")
+set(ENABLE_ORT_YOLO_FOUND OFF)
+if (ENABLE_ORT_YOLO)
+  find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h PATHS ${ORT_ROOT}/include NO_DEFAULT_PATH)
+  find_library(ONNXRUNTIME_LIBRARY onnxruntime PATHS ${ORT_ROOT}/lib NO_DEFAULT_PATH)
+  if (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+    set(ENABLE_ORT_YOLO_FOUND ON)
+    add_definitions(-DENABLE_ORT_YOLO=1)
+    include_directories(${ONNXRUNTIME_INCLUDE_DIR})
+    list(APPEND ONNXRUNTIME_LIBS ${ONNXRUNTIME_LIBRARY})
+    message(STATUS "ONNX Runtime found at ${ORT_ROOT}")
+  else()
+    message(WARNING "ENABLE_ORT_YOLO=ON but ONNX Runtime was not found in ${ORT_ROOT}. Run scripts/fetch_onnxruntime.sh or set -DENABLE_ORT_YOLO=OFF")
+  endif()
+endif()
+
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(./openalpr )
