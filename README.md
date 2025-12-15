@@ -1,72 +1,33 @@
-# 🚘 OpenALPR 2025 — Brazil & Mercosur  
-### Cars + Motorcycles • YOLOv8 • Production-ready C++
+# 🚘 OpenALPR 2025 — Brazil & Mercosur (YOLOv8)
 
-> 🇺🇸 **English version**  
-> 🇧🇷 **Versão em Português logo abaixo**
+Modernized OpenALPR engine with **native Brazil/Mercosur support**, **motorcycle plates**, and **YOLOv8-based detection**, built for **production in 2025**.
 
----
-
-## 📌 Table of Contents
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Architecture](#architecture)
-- [Performance](#performance)
-- [Configuration](#configuration)
-- [Build](#build)
-- [Usage](#usage)
-- [Project Status](#project-status)
-- [Philosophy](#philosophy)
-- [Disclaimer](#disclaimer)
-- [Português](#português)
+> 🇺🇸 English  
+> 🇧🇷 Português abaixo
 
 ---
 
-## Overview
+## English
 
-This repository is a **deep architectural evolution** of the classic OpenALPR engine, bringing it to **2025 production standards**, with a strong focus on:
+### What is this?
+A **production-grade evolution** of the classic OpenALPR engine, focused on:
+- Brazil & Mercosur plates
+- Cars and motorcycles
+- High performance C++
+- Modern AI detection (YOLOv8)
+- Clean, extensible architecture (no hacks)
 
-- 🇧🇷 **Brazil & Mercosur license plates**
-- 🏍️ **Motorcycle plates (real detection and OCR)**
-- ⚡ **High performance and real scalability**
-- 🧠 **Modern AI-based detection (YOLOv8)**
-- 🔌 **Plugable, configurable, and extensible architecture**
+### Key features
+- Native Brazil support (no `eu/ad` dependency)
+- Mercosur plates: `br2 → br` fallback
+- Motorcycle plate support with dedicated OCR profiles
+- YOLOv8 ONNX detector (plugable by config)
+- Automatic CPU/GPU backend selection
+- Process-based parallelism (safe & scalable)
 
-> **This is not just a fork.**  
-> It is an incremental reengineering effort that preserves what works and replaces what aged — without shortcuts or fragile hacks.
-
----
-
-## ✨ Key Features
-
-### ✅ Native Brazil & Mercosur Support
-- Old Brazilian plates: **LLLNNNN**
-- Mercosur plates: **LLLNLNN**
-- Native hybrid pipeline: **br2 → br**
-- No dependency on `eu/ad`
-- Explicit, deterministic, and logged fallback logic
-
----
-
-### 🏍️ Real Motorcycle Plate Support
-- YOLOv8-based detection
-- Dedicated OCR profiles for motorcycles:
-  - `br_moto.conf`
-  - `br2_moto.conf`
-- Automatic selection:
-  - YOLO class (`plate_car` / `plate_moto`)
-  - or bounding box aspect ratio
-- Same 7-character validation rules
-- No hacks or duplicated OCR logic
-
----
-
-### 🧠 Modern YOLO-Powered Detection (Plugable)
-- YOLOv8 ONNX as primary detector
-- Models loaded by **config path** (no recompilation)
-- Automatic hardware detection:
-  - CPU
-  - GPU (CUDA, when available)
-- Safe fallback to classic detector
-- Detector selection:
-  ```ini
-  detector_type = auto   # auto | yolo | classic
+### Build
+```bash
+mkdir build
+cd build
+cmake ..
+make -j$(nproc)
