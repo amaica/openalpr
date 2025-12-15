@@ -153,6 +153,23 @@ Esses valores são lidos na inicialização e registrados em nível de debug. Ne
 - Teclas: Space(play/pause), S(save), R(reset), Q/Esc(quit), 1(ROI default metade inferior)
 - ROI default automática: metade inferior (x=0,y=50%,w=100%,h=50%) se não houver ROI no conf
 
+#### Plate logging e qualidade
+- Preview com logging de placas:
+  ```bash
+  mkdir -p artifacts/logs
+  ./build/src/alpr-tool preview --conf artifacts/config_video_test/openalpr.conf --source /path/to/video.avi --log-plates=1 --log-file artifacts/logs/output_plates.log --log-every-n-frames=1 --log-throttle-ms=300
+  ```
+- Stress por processos (fallback multithread):
+  ```bash
+  FRAME=artifacts/tests/frames/frame1.jpg LEVELS="2 4 8" LOOPS=50 ./scripts/tests/thread_stress.sh
+  # Relatório: artifacts/reports/thread_stress.txt
+  ```
+- Acurácia com ground truth:
+  ```bash
+  python3 scripts/tests/plate_accuracy.py --csv artifacts/tests/ground_truth.csv --out artifacts/reports/plate_accuracy_report.json
+  # Texto: artifacts/reports/plate_accuracy_report.txt
+  ```
+
 ## Testes (bateria automatizada)
 ```bash
 TEST_IMAGE=/caminho/img.jpg ./scripts/tests/run_all.sh
