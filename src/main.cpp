@@ -491,12 +491,12 @@ int processImagesParallel(const std::vector<std::string>& filenames, const std::
         continue;
 
       std::string file = filenames[nextFileIdx];
+      nextFileIdx++; // always advance to avoid infinite retry on a bad file
       if (!workers[i].proc.sendJob(file))
       {
         std::cerr << "Failed to send job to worker" << std::endl;
         continue;
       }
-      nextFileIdx++;
       workers[i].busy = true;
       workers[i].currentFile = file;
       active++;
