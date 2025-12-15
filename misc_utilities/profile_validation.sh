@@ -16,7 +16,7 @@ run_dir() {
   for img in "$dir"/*.{jpg,JPG,jpeg,JPEG,png,PNG}; do
     [ -e "$img" ] || continue
     echo "- file: $img"
-    $ALPR_BIN -c br --config "$CONFIG" --debug -j "$img" | head -n 5
+    "$ALPR_BIN" -c br --config "$CONFIG" --debug -j "$img" | head -n 5
   done
 }
 
