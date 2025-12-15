@@ -8,6 +8,7 @@ CMakeCache.txt
 cmake_install.cmake
 _CPack_Packages/
 Makefile
+*.log
 
 # Objects / libs
 *.o
@@ -35,6 +36,7 @@ src/compile_commands.json
 .kdev/
 *.kdev4
 nbproject/
+.pytest_cache/
 
 # Project ancillary dirs
 windows/
