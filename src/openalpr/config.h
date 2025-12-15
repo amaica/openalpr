@@ -45,6 +45,27 @@ namespace alpr
 
       std::string country;
 
+      struct OCRConfig {
+        std::string primary;
+        std::string policy; // primary_only | fallback_on_low_confidence | ensemble
+        float minConfidence;
+        bool fallbackEnabled;
+        std::string fallbackPlugin;
+        float fallbackMinConfidence;
+        int fallbackTimeoutMs;
+      } ocrConfig;
+
+      struct PluginConfig {
+        bool enabled;
+        std::string path;
+      } pluginConfig;
+
+      struct VehicleAttrsConfig {
+        bool enabled;
+        std::string plugin;
+        float minConfidence;
+      } vehicleAttrsConfig;
+
       int detector;
 
       // Detector selection

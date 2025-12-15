@@ -137,6 +137,23 @@ debug_postprocess     = 0
 debug_show_images     = 0
 debug_pause_on_frame  = 0
 
+; OCR / plugins / vehicle attributes (parser-only, no runtime behavior change)
+ocr_primary = openalpr
+ocr_policy = primary_only
+ocr_min_confidence = 0
+
+ocr_fallback_enabled = 0
+ocr_fallback_plugin = deepseek
+ocr_fallback_min_confidence = 80
+ocr_fallback_timeout_ms = 800
+
+plugins_enabled = 0
+plugins_path = /opt/alpr/plugins
+
+vehicle_attrs_enabled = 0
+vehicle_attrs_plugin = onnx_vehicle
+vehicle_attrs_min_confidence = 0.7
+
 
 
 
