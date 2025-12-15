@@ -1,6 +1,7 @@
 
 ; Specify the path to the runtime data directory
-runtime_dir = /usr/share/openalpr/runtime_data
+; Use repository runtime_data by default; adjust if installed system-wide
+runtime_dir = ./runtime_data
 
 
 ocr_img_size_percent = 1.33333333
@@ -65,6 +66,14 @@ br_enable_hybrid = 1
 br_hybrid_order = br2,br
 br_hybrid_fallback_region = eu:ad
 br_hybrid_min_confidence = 70
+
+; Vehicle profile selection (for moto vs carro)
+; auto = decide by aspect ratio (moto_aspect_ratio_min/max)
+; car  = força perfis de carro
+; moto = força perfis de moto
+vehicle_profile_mode = auto
+moto_aspect_ratio_min = 0.9
+moto_aspect_ratio_max = 2.2
 
 ; Bypasses plate detection.  If this is set to 1, the library assumes that each region provided is a likely plate area.
 skip_detection = 0

@@ -490,12 +490,13 @@ int processImagesParallel(const std::vector<std::string>& filenames, const std::
       if (workers[i].busy)
         continue;
 
-      std::string file = filenames[nextFileIdx++];
+      std::string file = filenames[nextFileIdx];
       if (!workers[i].proc.sendJob(file))
       {
         std::cerr << "Failed to send job to worker" << std::endl;
         continue;
       }
+      nextFileIdx++;
       workers[i].busy = true;
       workers[i].currentFile = file;
       active++;
