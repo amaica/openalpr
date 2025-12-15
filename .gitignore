@@ -1,27 +1,22 @@
 *~
+
+# Build artifacts
 build/
-windows/
-scratch/
-out/
-debian_repo
-_CPack_Packages/
-/libraries/
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
-.o
-benchmarks/
-.kdev/
-*.kdev4
-src/CPackConfig.cmake
-src/CPackSourceConfig.cmake
+cmake_install.cmake
+_CPack_Packages/
 Makefile
-*.conf.local
-src/compile_commands.json
-website/
-utilities/
-samples/
-nbproject/
-runtime_data/keypoints/source.txt
+
+# Objects / libs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Packages / archives
 *.deb
 *.rpm
 openalpr_*.tar.gz
@@ -29,9 +24,32 @@ openalpr-*.asc
 openalpr-*.sig
 openalpr-*.tar.gz
 *.orig
-.DS_Store
 
-# vim editor files
+# Tooling / metadata
+compile_commands.json
+src/compile_commands.json
+.cache/
+.clangd/
+.vscode/
+.idea/
+.kdev/
+*.kdev4
+nbproject/
+
+# Project ancillary dirs
+windows/
+scratch/
+out/
+debian_repo
+/libraries/
+benchmarks/
+website/
+utilities/
+samples/
+runtime_data/keypoints/source.txt
+
+# Editor / OS
+.DS_Store
 *.swp
 
 # Visual Studio files
@@ -46,8 +64,6 @@ src.sln
 Debug/
 Release/
 
-# JetBrains IDEA / PyCharm
-.idea/
-
-
-cmake_install.cmake
+# Python cache
+__pycache__/
+*.py[cod]
