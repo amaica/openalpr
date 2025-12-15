@@ -22,6 +22,8 @@
 #include <iostream>
 #include <iterator>
 #include <algorithm>
+#include <signal.h>
+#include <poll.h>
 
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
@@ -33,6 +35,7 @@
 #include "video/videobuffer.h"
 #include "motiondetector.h"
 #include "alpr.h"
+#include "recognition_worker_process.h"
 
 using namespace alpr;
 
@@ -46,6 +49,8 @@ bool do_motiondetection = true;
 
 /** Function Headers */
 bool detectandshow(Alpr* alpr, cv::Mat frame, std::string region, bool writeJson);
+void print_results(const AlprResults& results, bool writeJson);
+int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePattern, int topn, bool debug_mode, bool outputJson, int jobs);
 bool is_supported_image(std::string image_file);
 
 bool measureProcessingTime = false;
@@ -65,6 +70,7 @@ int main( int argc, const char** argv )
   std::string country;
   int topn;
   bool debug_mode = false;
+  int jobs = 1;
 
   TCLAP::CmdLine cmd("OpenAlpr Command Line Utility", ' ', Alpr::getVersion());
 
@@ -76,6 +82,7 @@ int main( int argc, const char** argv )
   TCLAP::ValueArg<std::string> configFileArg("","config","Path to the openalpr.conf file",false, "" ,"config_file");
   TCLAP::ValueArg<std::string> templatePatternArg("p","pattern","Attempt to match the plate number against a plate pattern (e.g., md for Maryland, ca for California)",false, "" ,"pattern code");
   TCLAP::ValueArg<int> topNArg("n","topn","Max number of possible plate numbers to return.  Default=10",false, 10 ,"topN");
+  TCLAP::ValueArg<int> jobsArg("","jobs","Number of parallel worker processes for image files.  Default=1 (synchronous)",false, 1 ,"jobs");
 
   TCLAP::SwitchArg jsonSwitch("j","json","Output recognition results in JSON format.  Default=off", cmd, false);
   TCLAP::SwitchArg debugSwitch("","debug","Enable debug output.  Default=off", cmd, false);
@@ -88,6 +95,7 @@ int main( int argc, const char** argv )
     cmd.add( templatePatternArg );
     cmd.add( seekToMsArg );
     cmd.add( topNArg );
+    cmd.add( jobsArg );
     cmd.add( configFileArg );
     cmd.add( fileArg );
     cmd.add( countryCodeArg );
@@ -110,7 +118,8 @@ int main( int argc, const char** argv )
     templatePattern = templatePatternArg.getValue();
     topn = topNArg.getValue();
     measureProcessingTime = clockSwitch.getValue();
-	do_motiondetection = motiondetect.getValue();
+    do_motiondetection = motiondetect.getValue();
+    jobs = jobsArg.getValue();
   }
   catch (TCLAP::ArgException &e)    // catch any exceptions
   {
@@ -118,7 +127,32 @@ int main( int argc, const char** argv )
     return 1;
   }
 
-  
+  // Fast path: parallel processing for lists of image files only.
+  bool parallelEligible = jobs > 1;
+  if (parallelEligible)
+  {
+    for (unsigned int i = 0; i < filenames.size(); i++)
+    {
+      const std::string& filename = filenames[i];
+      if (!is_supported_image(filename) || filename == "-" || filename == "stdin" ||
+          startsWith(filename, "http://") || startsWith(filename, "https://") ||
+          filename == "webcam" || DirectoryExists(filename.c_str()))
+      {
+        parallelEligible = false;
+        break;
+      }
+    }
+  }
+
+  if (parallelEligible)
+  {
+    return processImagesParallel(filenames, country, configFile, detectRegion, templatePattern, topn, debug_mode, outputJson, jobs);
+  }
+  else if (jobs > 1)
+  {
+    std::cerr << "Parallel mode (--jobs) is only supported for image file inputs. Running sequentially." << std::endl;
+  }
+
   cv::Mat frame;
 
   Alpr alpr(country, configFile);
@@ -319,7 +353,13 @@ int main( int argc, const char** argv )
     }
     else
     {
-      std::cerr << "Unknown file type" << std::endl;
+      bool img = is_supported_image(filename);
+      bool dir = DirectoryExists(filename.c_str());
+      bool vid = hasEndingInsensitive(filename, ".mp4") || hasEndingInsensitive(filename, ".avi") ||
+                 hasEndingInsensitive(filename, ".mkv") || hasEndingInsensitive(filename, ".webm") ||
+                 hasEndingInsensitive(filename, ".flv") || hasEndingInsensitive(filename, ".mjpg") ||
+                 hasEndingInsensitive(filename, ".mjpeg");
+      std::cerr << "Unknown file type: " << filename << " img=" << img << " dir=" << dir << " vid=" << vid << std::endl;
       return 1;
     }
   }
@@ -332,6 +372,39 @@ bool is_supported_image(std::string image_file)
   return (hasEndingInsensitive(image_file, ".png") || hasEndingInsensitive(image_file, ".jpg") || 
 	  hasEndingInsensitive(image_file, ".tif") || hasEndingInsensitive(image_file, ".bmp") ||  
 	  hasEndingInsensitive(image_file, ".jpeg") || hasEndingInsensitive(image_file, ".gif"));
+}
+
+
+void print_results(const AlprResults& results, bool writeJson)
+{
+  if (writeJson)
+  {
+    std::cout << Alpr::toJson(results) << std::endl;
+    return;
+  }
+
+  for (int i = 0; i < results.plates.size(); i++)
+  {
+    std::cout << "plate" << i << ": " << results.plates[i].topNPlates.size() << " results";
+    if (measureProcessingTime)
+      std::cout << " -- Processing Time = " << results.plates[i].processing_time_ms << "ms.";
+    std::cout << std::endl;
+
+    if (results.plates[i].regionConfidence > 0)
+      std::cout << "State ID: " << results.plates[i].region << " (" << results.plates[i].regionConfidence << "% confidence)" << std::endl;
+    
+    for (int k = 0; k < results.plates[i].topNPlates.size(); k++)
+    {
+      std::string no_newline = results.plates[i].topNPlates[k].characters;
+      std::replace(no_newline.begin(), no_newline.end(), '\n','-');
+      
+      std::cout << "    - " << no_newline << "\t confidence: " << results.plates[i].topNPlates[k].overall_confidence;
+      if (templatePattern.size() > 0 || results.plates[i].regionConfidence > 0)
+        std::cout << "\t pattern_match: " << results.plates[i].topNPlates[k].matches_template;
+      
+      std::cout << std::endl;
+    }
+  }
 }
 
 
@@ -360,37 +433,127 @@ bool detectandshow( Alpr* alpr, cv::Mat frame, std::string region, bool writeJso
   
   if (writeJson)
   {
-    std::cout << alpr->toJson( results ) << std::endl;
+    print_results(results, writeJson);
   }
   else
   {
-    for (int i = 0; i < results.plates.size(); i++)
-    {
-      std::cout << "plate" << i << ": " << results.plates[i].topNPlates.size() << " results";
-      if (measureProcessingTime)
-        std::cout << " -- Processing Time = " << results.plates[i].processing_time_ms << "ms.";
-      std::cout << std::endl;
-
-      if (results.plates[i].regionConfidence > 0)
-        std::cout << "State ID: " << results.plates[i].region << " (" << results.plates[i].regionConfidence << "% confidence)" << std::endl;
-      
-      for (int k = 0; k < results.plates[i].topNPlates.size(); k++)
-      {
-        // Replace the multiline newline character with a dash
-        std::string no_newline = results.plates[i].topNPlates[k].characters;
-        std::replace(no_newline.begin(), no_newline.end(), '\n','-');
-        
-        std::cout << "    - " << no_newline << "\t confidence: " << results.plates[i].topNPlates[k].overall_confidence;
-        if (templatePattern.size() > 0 || results.plates[i].regionConfidence > 0)
-          std::cout << "\t pattern_match: " << results.plates[i].topNPlates[k].matches_template;
-        
-        std::cout << std::endl;
-      }
-    }
+    print_results(results, writeJson);
   }
 
 
 
   return results.plates.size() > 0;
+}
+
+
+int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePatternParam, int topn, bool debug_mode, bool outputJson, int jobs)
+{
+  if (filenames.size() == 0)
+    return 0;
+
+  int workerCount = std::max(1, std::min(static_cast<int>(filenames.size()), std::max(1, jobs)));
+  RecognitionWorkerProcess::Params params;
+  params.country = country;
+  params.configFile = configFile;
+  params.templatePattern = templatePatternParam;
+  params.topn = topn;
+  params.detectRegion = detectRegion;
+  params.debug = debug_mode;
+  params.measureProcessingTime = measureProcessingTime;
+
+  struct WorkerState
+  {
+    RecognitionWorkerProcess proc;
+    bool busy;
+    std::string currentFile;
+    WorkerState(const RecognitionWorkerProcess::Params& p) : proc(p), busy(false) {}
+  };
+
+  std::vector<WorkerState> workers;
+  for (int i = 0; i < workerCount; i++)
+  {
+    workers.push_back(WorkerState(params));
+    if (!workers.back().proc.start())
+    {
+      std::cerr << "Failed to start worker process " << i << std::endl;
+      return 1;
+    }
+  }
+
+  size_t nextFileIdx = 0;
+  int active = 0;
+
+  while (nextFileIdx < filenames.size() || active > 0)
+  {
+    for (int i = 0; i < workerCount && nextFileIdx < filenames.size(); i++)
+    {
+      if (workers[i].busy)
+        continue;
+
+      std::string file = filenames[nextFileIdx++];
+      if (!workers[i].proc.sendJob(file))
+      {
+        std::cerr << "Failed to send job to worker" << std::endl;
+        continue;
+      }
+      workers[i].busy = true;
+      workers[i].currentFile = file;
+      active++;
+    }
+
+    if (active == 0)
+      break;
+
+    std::vector<pollfd> fds;
+    std::vector<int> idxmap;
+    for (int i = 0; i < workerCount; i++)
+    {
+      if (!workers[i].busy) continue;
+      pollfd pfd;
+      pfd.fd = workers[i].proc.readFd();
+      pfd.events = POLLIN;
+      pfd.revents = 0;
+      fds.push_back(pfd);
+      idxmap.push_back(i);
+    }
+
+    int ret = poll(fds.data(), fds.size(), 500);
+    if (ret <= 0)
+      continue;
+
+    for (size_t f = 0; f < fds.size(); f++)
+    {
+      if (!(fds[f].revents & POLLIN))
+        continue;
+      int widx = idxmap[f];
+      std::string imagePath;
+      std::string json;
+      if (!workers[widx].proc.readResult(imagePath, json))
+      {
+        workers[widx].busy = false;
+        active--;
+        continue;
+      }
+      workers[widx].busy = false;
+      active--;
+
+      AlprResults results = Alpr::fromJson(json);
+
+      if (outputJson)
+        print_results(results, true);
+      else
+      {
+        if (results.plates.size() == 0)
+          std::cout << "No license plates found for " << imagePath << "." << std::endl;
+        else
+          print_results(results, false);
+      }
+    }
+  }
+
+  for (int i = 0; i < workerCount; i++)
+    workers[i].proc.stop();
+
+  return 0;
 }
 

@@ -14,6 +14,7 @@ set(lpr_source_files
  detection/detectorfactory.cpp
  detection/detectormorph.cpp
  detection/detectormask.cpp
+ detection/yolo_plate_detector.cpp
  licenseplatecandidate.cpp
  utility.cpp
  ocr/tesseract_ocr.cpp

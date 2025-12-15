@@ -123,36 +123,26 @@ namespace alpr
     grayImg = prewarp->warpImage(grayImg);
     warpedRegionsOfInterest = prewarp->projectRects(regionsOfInterest, grayImg.cols, grayImg.rows, false);
 
-    // Iterate through each country provided (typically just one)
-    // and aggregate the results if necessary
-    ResultAggregator country_aggregator(MERGE_PICK_BEST, topN, config);
-    for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
+    // Hybrid BR flow
+    if (config->country == "br" && config->brHybridEnable)
     {
-      if (config->debugGeneral)
-        cout << "Analyzing: " << config->loaded_countries[i] << endl;
-
-      config->setCountry(config->loaded_countries[i]);
-      
-      // Reapply analysis for each multiple analysis value set in the config,
-      // make a minor imperceptible tweak to the input image each time
-      ResultAggregator iter_aggregator(MERGE_COMBINE, topN, config);
-      for (unsigned int iteration = 0; iteration < config->analysis_count; iteration++)
-      {
-        Mat iteration_image = iter_aggregator.applyImperceptibleChange(grayImg, iteration);
-        //drawAndWait(iteration_image);
-        AlprFullDetails iter_results = analyzeSingleCountry(img, iteration_image, warpedRegionsOfInterest);
-        iter_aggregator.addResults(iter_results);
-      }
-      
-      AlprFullDetails sub_results = iter_aggregator.getAggregateResults();
-      sub_results.results.epoch_time = start_time;
-      sub_results.results.img_width = img.cols;
-      sub_results.results.img_height = img.rows;
-      sub_results.results.regionsOfInterest = response.results.regionsOfInterest;
-      
-      country_aggregator.addResults(sub_results);
+      response = analyzeWithFallback(img, grayImg, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
     }
-    response = country_aggregator.getAggregateResults();
+    else
+    {
+      // Iterate through each country provided (typically just one)
+      // and aggregate the results if necessary
+      ResultAggregator country_aggregator(MERGE_PICK_BEST, topN, config);
+      for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
+      {
+        if (config->debugGeneral)
+          cout << "Analyzing: " << config->loaded_countries[i] << endl;
+
+        AlprFullDetails sub_results = runCountryAnalysis(config->loaded_countries[i], img, grayImg, warpedRegionsOfInterest, response.results.regionsOfInterest, start_time);
+        country_aggregator.addResults(sub_results);
+      }
+      response = country_aggregator.getAggregateResults();
+    }
 
     timespec endTime;
     getTimeMonotonic(&endTime);
@@ -212,6 +202,148 @@ namespace alpr
     }
 
     return response;
+  }
+
+  AlprFullDetails AlprImpl::runCountryAnalysis(const std::string& country, cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
+  {
+    config->setCountry(country);
+    loadRecognizers();
+
+    ResultAggregator iter_aggregator(MERGE_COMBINE, topN, config);
+    for (unsigned int iteration = 0; iteration < config->analysis_count; iteration++)
+    {
+      Mat iteration_image = iter_aggregator.applyImperceptibleChange(grayImg, iteration);
+      AlprFullDetails iter_results = analyzeSingleCountry(colorImg, iteration_image, warpedRegionsOfInterest);
+      iter_aggregator.addResults(iter_results);
+    }
+
+    AlprFullDetails sub_results = iter_aggregator.getAggregateResults();
+    sub_results.results.epoch_time = start_time;
+    sub_results.results.img_width = colorImg.cols;
+    sub_results.results.img_height = colorImg.rows;
+    sub_results.results.regionsOfInterest = rois;
+    return sub_results;
+  }
+
+  AlprFullDetails AlprImpl::analyzeWithFallback(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time)
+  {
+    struct Attempt {
+      std::string country;
+      std::string pattern;
+      std::string label;
+    };
+
+    std::vector<Attempt> attempts;
+    for (size_t i = 0; i < config->brHybridOrder.size(); i++)
+    {
+      Attempt a;
+      a.country = config->brHybridOrder[i];
+      a.label = a.country;
+      attempts.push_back(a);
+      if (i == 0 && config->brHybridFallbackRegion.size() > 0)
+      {
+        // Optional eu/ad between first and second attempt
+        std::string fallback = config->brHybridFallbackRegion;
+        size_t pos = fallback.find(':');
+        Attempt fb;
+        if (pos != std::string::npos)
+        {
+          fb.country = fallback.substr(0, pos);
+          fb.pattern = fallback.substr(pos + 1);
+        }
+        else
+        {
+          fb.country = fallback;
+        }
+        fb.label = config->brHybridFallbackRegion;
+        attempts.push_back(fb);
+      }
+    }
+
+    if (attempts.size() == 0)
+    {
+      Attempt a;
+      a.country = "br2";
+      attempts.push_back(a);
+      Attempt b;
+      b.country = "br";
+      attempts.push_back(b);
+    }
+
+    std::string originalCountry = config->country;
+    std::string originalDefaultRegion = defaultRegion;
+
+    double bestOkConf = -1.0;
+    double bestConf = -1.0;
+    AlprFullDetails bestOkResult;
+    AlprFullDetails bestResult;
+
+    for (size_t idx = 0; idx < attempts.size(); idx++)
+    {
+      Attempt attempt = attempts[idx];
+
+      config->setCountry(attempt.country);
+      loadRecognizers();
+
+      std::string prevRegion = defaultRegion;
+      if (attempt.pattern.size() > 0)
+        setDefaultRegion(attempt.pattern);
+      else
+        setDefaultRegion(originalDefaultRegion);
+
+      AlprFullDetails result = runCountryAnalysis(attempt.country, colorImg, grayImg, warpedRegionsOfInterest, rois, start_time);
+
+      double conf = -1.0;
+      bool matchesTemplate = false;
+      if (result.results.plates.size() > 0)
+      {
+        conf = result.results.plates[0].bestPlate.overall_confidence;
+        matchesTemplate = result.results.plates[0].bestPlate.matches_template;
+      }
+
+      bool ok = (result.results.plates.size() > 0) && (conf >= config->brHybridMinConfidence);
+      std::string reason = "";
+      if (result.results.plates.size() == 0)
+        reason = "no_plate";
+      else if (conf < config->brHybridMinConfidence)
+        reason = "low_conf";
+      else if (config->mustMatchPattern && !matchesTemplate)
+      {
+        ok = false;
+        reason = "pattern_mismatch";
+      }
+
+      if (config->debugGeneral || config->debugPostProcess)
+      {
+        if (ok)
+          std::cout << "[br-hybrid] attempt " << attempt.label << " accepted conf=" << conf << std::endl;
+        else
+          std::cout << "[br-hybrid] attempt " << attempt.label << " fallback reason=" << reason << " conf=" << conf << std::endl;
+      }
+
+      if (ok && conf > bestOkConf)
+      {
+        bestOkConf = conf;
+        bestOkResult = result;
+      }
+
+      if (idx == 0 || conf > bestConf)
+      {
+        bestConf = conf;
+        bestResult = result;
+      }
+
+      setDefaultRegion(prevRegion);
+    }
+
+    config->setCountry(originalCountry);
+    loadRecognizers();
+    setDefaultRegion(originalDefaultRegion);
+    if (bestOkConf >= 0)
+    {
+      return bestOkResult;
+    }
+    return bestResult;
   }
 
   AlprFullDetails AlprImpl::analyzeSingleCountry(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest)
@@ -735,10 +867,8 @@ namespace alpr
 
   std::string AlprImpl::getVersion()
   {
-    std::stringstream ss;
-
-    ss << OPENALPR_MAJOR_VERSION << "." << OPENALPR_MINOR_VERSION << "." << OPENALPR_PATCH_VERSION;
-    return ss.str();
+    // Custom branded version string
+    return "maica 1.0";
   }
   
   

@@ -172,6 +172,9 @@ namespace alpr
     if (runtimeBaseDir.find("${CMAKE_INSTALL_PREFIX}") >= 0)
       runtimeBaseDir = replaceAll(runtimeBaseDir, "${CMAKE_INSTALL_PREFIX}", INSTALL_PREFIX);
     
+    detectorType = getString(ini, defaultIni, "", "detector_type", "auto");
+    std::transform(detectorType.begin(), detectorType.end(), detectorType.begin(), ::tolower);
+
     std::string detectorString = getString(ini, defaultIni, "", "detector", "lbpcpu");
     std::transform(detectorString.begin(), detectorString.end(), detectorString.begin(), ::tolower);
 
@@ -188,6 +191,15 @@ namespace alpr
       std::cerr << "Invalid detector specified: " << detectorString << ".  Using default" << std::endl;
       detector = DETECTOR_LBP_CPU;
     }
+
+    // YOLO parameters
+    yoloModelPath = getString(ini, defaultIni, "", "yolo_model_path", "");
+    yoloInputWidth = getInt(ini, defaultIni, "", "yolo_input_width", 640);
+    yoloInputHeight = getInt(ini, defaultIni, "", "yolo_input_height", 640);
+    yoloConfThreshold = getFloat(ini, defaultIni, "", "yolo_conf_threshold", 0.25f);
+    yoloNmsThreshold = getFloat(ini, defaultIni, "", "yolo_nms_threshold", 0.45f);
+    yoloMinDetections = getInt(ini, defaultIni, "", "yolo_min_detections", 1);
+    detectorFallbackClassic = getBoolean(ini, defaultIni, "", "detector_fallback_classic", true);
     
     detection_iteration_increase = getFloat(ini, defaultIni, "", "detection_iteration_increase", 1.1);
     detectionStrictness = getInt(ini, defaultIni, "", "detection_strictness", 3);
@@ -218,6 +230,17 @@ namespace alpr
 
     postProcessMinConfidence = getFloat(ini, defaultIni, "", "postprocess_min_confidence", 100);
     postProcessConfidenceSkipLevel = getFloat(ini, defaultIni, "", "postprocess_confidence_skip_level", 100);
+
+    brHybridEnable = getBoolean(ini, defaultIni, "", "br_enable_hybrid", true);
+    std::string hybridOrderStr = getString(ini, defaultIni, "", "br_hybrid_order", "br2,br");
+    brHybridOrder = parse_hybrid_order(hybridOrderStr);
+    if (brHybridOrder.size() == 0)
+    {
+      brHybridOrder.push_back("br2");
+      brHybridOrder.push_back("br");
+    }
+    brHybridFallbackRegion = getString(ini, defaultIni, "", "br_hybrid_fallback_region", "");
+    brHybridMinConfidence = getFloat(ini, defaultIni, "", "br_hybrid_min_confidence", 80);
 
     debugGeneral = 	getBoolean(ini, defaultIni, "", "debug_general",		false);
     debugTiming = 	getBoolean(ini, defaultIni, "", "debug_timing",		false);
@@ -370,6 +393,20 @@ namespace alpr
     }
 
     return parsed_countries;
+  }
+
+  std::vector<std::string> Config::parse_hybrid_order(std::string order)
+  {
+    std::vector<std::string> parsed;
+    std::istringstream ss(order);
+    std::string token;
+    while (std::getline(ss, token, ','))
+    {
+      std::string trimmed_token = trim(token);
+      if (trimmed_token.size() > 0)
+        parsed.push_back(trimmed_token);
+    }
+    return parsed;
   }
 
   bool Config::country_is_loaded(std::string country) {

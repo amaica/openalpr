@@ -121,6 +121,8 @@ namespace alpr
       std::string defaultRegion;
 
       void loadRecognizers();
+      AlprFullDetails runCountryAnalysis(const std::string& country, cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
+      AlprFullDetails analyzeWithFallback(cv::Mat colorImg, cv::Mat grayImg, std::vector<cv::Rect> warpedRegionsOfInterest, const std::vector<AlprRegionOfInterest>& rois, int64_t start_time);
       
       cv::Mat getCharacterTransformMatrix(PipelineData* pipeline_data );
       std::vector<AlprCoordinate> getCharacterPoints(cv::Rect char_rect, cv::Mat transmtx);

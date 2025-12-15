@@ -47,6 +47,18 @@ namespace alpr
 
       int detector;
 
+      // Detector selection
+      std::string detectorType; // auto | classic | yolo
+      bool detectorFallbackClassic;
+
+      // YOLO settings
+      std::string yoloModelPath;
+      int yoloInputWidth;
+      int yoloInputHeight;
+      float yoloConfThreshold;
+      float yoloNmsThreshold;
+      int yoloMinDetections;
+
       float detection_iteration_increase;
       int detectionStrictness;
       float maxPlateWidthPercent;
@@ -121,6 +133,12 @@ namespace alpr
       unsigned int postProcessMinCharacters;
       unsigned int postProcessMaxCharacters;
 
+      // Brazil hybrid (br/br2) fallback settings
+      bool brHybridEnable;
+      std::vector<std::string> brHybridOrder;
+      std::string brHybridFallbackRegion; // format: country:pattern (e.g., eu:ad)
+      float brHybridMinConfidence;
+
       std::string postProcessRegexLetters;
       std::string postProcessRegexNumbers;
 
@@ -158,6 +176,7 @@ namespace alpr
       float stateIdImagePercent;
 
       std::vector<std::string> parse_country_string(std::string countries);
+      std::vector<std::string> parse_hybrid_order(std::string order);
       bool country_is_loaded(std::string country);
 
       void loadCommonValues(std::string configFile);
@@ -171,7 +190,8 @@ namespace alpr
     DETECTOR_LBP_CPU=0,
     DETECTOR_LBP_GPU=1,
     DETECTOR_MORPH_CPU=2,
-    DETECTOR_LBP_OPENCL=3
+        DETECTOR_LBP_OPENCL=3,
+        DETECTOR_YOLO=4
   };
 
 }
