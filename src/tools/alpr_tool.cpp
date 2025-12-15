@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <cstdlib>
 #include <algorithm>
+#include <regex>
 #include "openalpr/alpr.h"
 #include <stdexcept>
 
@@ -853,27 +854,60 @@ static bool getTimeSeconds(VideoCapture& cap, int frameIdx, double fpsReported, 
   return false;
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, const PreviewRuntimeOptions& opts) {
+static bool isValidMercosul(const string& plate) {
+  static const std::regex merc("^([A-Z]{3}[0-9][A-Z][0-9]{2})$");
+  return std::regex_match(plate, merc);
+}
+static bool isValidOldBr(const string& plate) {
+  static const std::regex old("^([A-Z]{3}[0-9]{4})$");
+  return std::regex_match(plate, old);
+}
+
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, const PreviewRuntimeOptions& opts, const string& countryArg) {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
   string src = source.empty() ? cfg.get("video_source","") : source;
+  string countryCfg = cfg.get("country","br2");
+  string country = countryArg.empty() ? countryCfg : countryArg;
   if (src.empty()) {
     cout << "Enter video source (rtsp/device/video path): ";
     getline(cin, src);
+  }
+  cout << "[config] conf_path=" << confPath << "\n";
+  cout << "[config] runtime_data_path=" << cfg.get("runtime_dir","") << "\n";
+  cout << "[config] country=" << country << "\n";
+  string detectorType = cfg.get("detector_type","auto");
+  string yoloModel = cfg.get("yolo_model_path", cfg.get("yolo_model",""));
+  string detector = cfg.get("detector","yolo");
+  string provider = cfg.get("yolo_provider", cfg.get("yolo_device","cpu"));
+  bool modelExists = false;
+  if (!yoloModel.empty()) {
+    ifstream f(yoloModel);
+    modelExists = f.good();
+  }
+  cout << "[yolo] model_path=" << (yoloModel.empty() ? "<empty>" : yoloModel)
+       << " exists=" << (modelExists ? "true" : "false")
+       << " provider=" << provider
+       << " detector_type=" << detectorType
+       << " detector=" << detector
+       << "\n";
+  bool yoloReady = modelExists && (detector == "yolo" || detectorType == "yolo" || detectorType == "auto");
+  string fallbackReason;
+  if (!yoloReady) {
+    fallbackReason = modelExists ? "detector_not_yolo" : "model_missing";
   }
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
     return;
   }
-  string country = cfg.get("country","us");
   Alpr alpr(country, confPath, "");
   if (!alpr.isLoaded()) {
     cerr << "Could not load ALPR with config: " << confPath << endl;
     return;
   }
-  if (selfTest) speedCfg.enabled = true;
+    if (selfTest) speedCfg.enabled = true;
   ofstream logFile;
   if (!logPath.empty()) {
     ensureParentDir(logPath);
@@ -899,6 +933,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   const double tickFreq = getTickFrequency();
   auto wallSeconds = [&](){ return static_cast<double>(getTickCount()) / tickFreq; };
   const bool trackingActive = speedCfg.enabled || opts.logPlates;
+  bool detectorLogged = false;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
@@ -914,6 +949,15 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     if (!bgr.isContinuous()) bgr = bgr.clone();
     double lineA = (roi.area() > 0 ? roi.y + speedCfg.yA * roi.height : speedCfg.yA * frame.rows);
     double lineB = (roi.area() > 0 ? roi.y + speedCfg.yB * roi.height : speedCfg.yB * frame.rows);
+
+    if (!detectorLogged) {
+      if (yoloReady) logLine("[detector] using=yolo");
+      else {
+        std::ostringstream oss; oss << "[detector] using=classic fallback_reason=" << fallbackReason;
+        logLine(oss.str());
+      }
+      detectorLogged = true;
+    }
 
     AlprResults results;
     if (selfTest) {
@@ -955,7 +999,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     }
 
     bool anyDetections = !results.plates.empty();
-    if (trackingActive) {
+  if (trackingActive) {
       for (const auto& plate : results.plates) {
         Rect pr = plateRect(plate);
         Point c((pr.x+pr.width/2), (pr.y+pr.height/2));
@@ -1015,6 +1059,16 @@ static void cmdPreview(const string& source, const string& confPath, const strin
             tr.last_logged_plate_text = plateText;
             tr.last_logged_t = tNow;
           }
+        }
+        if ((country == "br" || country == "br2") && !plateText.empty() && plateText != "<none>") {
+          string norm = plateText;
+          std::transform(norm.begin(), norm.end(), norm.begin(), ::toupper);
+          string match = "invalid";
+          if (isValidMercosul(norm)) match = "mercosul";
+          else if (isValidOldBr(norm)) match = "old";
+          std::ostringstream oss;
+          oss << "[br] plate_candidate=" << norm << " match=" << match;
+          logLine(oss.str());
         }
 
         if (speedCfg.enabled && inRoi && tOk) {
@@ -1214,6 +1268,7 @@ int main(int argc, char** argv) {
       string log = "artifacts/logs/preview.log";
       bool selfTest = false;
       PreviewRuntimeOptions opts;
+      string countryArg;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -1225,6 +1280,7 @@ int main(int argc, char** argv) {
         if (a.rfind("--source",0)==0) { eatValue(src); continue; }
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
+        if (a.rfind("--country",0)==0) { eatValue(countryArg); continue; }
         if (a.rfind("--log-plates",0)==0) { string v; eatValue(v); opts.logPlates = (v=="1"||v=="true"); continue; }
         if (a.rfind("--log-events",0)==0) { string v; eatValue(v); opts.logEvents = (v!="0"&&v!="false"); continue; }
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
@@ -1232,13 +1288,13 @@ int main(int argc, char** argv) {
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--speed-selftest] [--log-plates 0|1] [--log-every-n-frames <int>] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>]\n";
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest] [--log-plates 0|1] [--log-every-n-frames <int>] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
       if (!opts.logPlates) opts.logEveryNFrames = std::max(opts.logEveryNFrames, 1);
-      cmdPreview(src, conf, log, selfTest, opts);
+      cmdPreview(src, conf, log, selfTest, opts, countryArg);
       return 0;
     }
     if (sub == "export-yolo") {
