@@ -145,6 +145,15 @@ sudo TEST_IMAGE=/caminho/para/imagem.jpg ./scripts/install.sh
   - `RUN_TESTS` (padrão: 1)
   - `TEST_IMAGE` (obrigatória para o smoke test)
 
+### Interface de configuração
+Após instalar, use a interface visual via OpenCV HighGUI:
+```
+alpr-config roi
+alpr-config tune
+alpr-config preview
+```
+Isso abre a UI para desenhar ROI, ajustar preproc e fazer preview.
+
 ## Usage
 ```bash
 alpr -c br car.jpg

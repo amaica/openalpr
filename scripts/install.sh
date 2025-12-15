@@ -49,8 +49,10 @@ cmake --build "${BUILD_DIR}" -j"${JOBS}"
 log "Installing to ${PREFIX}"
 if [[ -n "$SUDO" ]]; then
   $SUDO cmake --install "${BUILD_DIR}"
+  $SUDO install -m 0755 scripts/alpr-config.sh "${PREFIX}/bin/alpr-config"
 else
   cmake --install "${BUILD_DIR}"
+  install -m 0755 scripts/alpr-config.sh "${PREFIX}/bin/alpr-config"
 fi
 
 if [[ "${RUN_TESTS}" != "0" ]]; then
