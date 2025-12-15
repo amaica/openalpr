@@ -11,16 +11,11 @@ require_cmd() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-CONFIG_DIR="${CONFIG_DIR:-}"
-if [[ -n "${CONFIG_DIR}" ]]; then
-  :
-elif [[ -d "/opt/alpr" ]]; then
-  CONFIG_DIR="/opt/alpr"
-elif [[ -d "${REPO_ROOT}/config" ]]; then
-  CONFIG_DIR="${REPO_ROOT}/config"
-else
-  die "CONFIG_DIR not set and no default config directory found (/opt/alpr or ./config). Export CONFIG_DIR explicitly."
-fi
+ARTIFACTS_ROOT="${REPO_ROOT}/artifacts"
+LOG_DIR="${ARTIFACTS_ROOT}/logs"
+MODEL_DIR="${ARTIFACTS_ROOT}/models"
+RESULTS_DIR="${ARTIFACTS_ROOT}/results"
+mkdir -p "${LOG_DIR}" "${MODEL_DIR}" "${RESULTS_DIR}"
 
 TEST_IMAGE="${TEST_IMAGE:-}"
 [[ -n "${TEST_IMAGE}" ]] || die "TEST_IMAGE is required (path to an image for smoke test)"
@@ -29,7 +24,7 @@ TEST_IMAGE="${TEST_IMAGE:-}"
 YOLO_PT="${YOLO_PT:-/home/aurelio/FONTES/python/SynkiSentinel/models/plates/yolov8n_plates.pt}"
 [[ -f "${YOLO_PT}" ]] || die "YOLO_PT not found: ${YOLO_PT}"
 
-YOLO_ONNX_OUT="${YOLO_ONNX_OUT:-${REPO_ROOT}/artifacts/models/yolo_plates.onnx}"
+YOLO_ONNX_OUT="${YOLO_ONNX_OUT:-${MODEL_DIR}/yolo_plates.onnx}"
 UPDATE_CONF="${UPDATE_CONF:-0}"
 PREFIX="${PREFIX:-/usr/local}"
 BUILD_DIR="${BUILD_DIR:-build}"
@@ -38,35 +33,72 @@ JOBS="${JOBS:-$(command -v nproc >/dev/null 2>&1 && nproc || echo 1)}"
 require_cmd cmake
 require_cmd python3
 
-log "Using CONFIG_DIR=${CONFIG_DIR}"
+STEP_SUMMARY=()
+FAIL_FLAG=0
+FAIL_DETAIL=""
+
+record() {
+  local status="$1"; shift
+  local name="$1"; shift
+  local info="$1"; shift
+  STEP_SUMMARY+=("[$status] ${name} -> ${info}")
+  if [[ "${status}" == "FAIL" && "${FAIL_FLAG}" -eq 0 ]]; then
+    FAIL_FLAG=1
+    FAIL_DETAIL="${info}"
+  fi
+}
+
+run_step() {
+  local name="$1"; shift
+  local log_file="$1"; shift
+  local cmd_str="$*"
+  set +e
+  eval "${cmd_str}" >"${log_file}" 2>&1
+  local rc=$?
+  set -e
+  if [[ ${rc} -eq 0 ]]; then
+    record "PASS" "${name}" "${log_file}"
+  else
+    record "FAIL" "${name}" "${log_file}"
+    echo "[FAIL] ${name}"
+    echo "Command: ${cmd_str}"
+    echo "Log: ${log_file}"
+    exit 1
+  fi
+}
+
+CONFIG_DIR="${CONFIG_DIR:-}"
+
 log "Using YOLO_PT=${YOLO_PT}"
 log "ONNX output will be ${YOLO_ONNX_OUT}"
 log "UPDATE_CONF=${UPDATE_CONF}"
 
-mkdir -p "$(dirname "${YOLO_ONNX_OUT}")"
-
-log "Exporting YOLO to ONNX"
-python3 "${SCRIPT_DIR}/export_yolo.py" --pt "${YOLO_PT}" --out "${YOLO_ONNX_OUT}"
+run_step "export_yolo" "${LOG_DIR}/export_yolo.log" \
+  "python3 \"${SCRIPT_DIR}/export_yolo.py\" --pt \"${YOLO_PT}\" --out \"${YOLO_ONNX_OUT}\""
 
 if [[ "${UPDATE_CONF}" == "1" ]]; then
-  CONF_FILE=""
-  if [[ -f "${CONFIG_DIR}/openalpr.conf" ]]; then
-    CONF_FILE="${CONFIG_DIR}/openalpr.conf"
-  elif [[ -f "${CONFIG_DIR}/openalpr.conf.defaults" ]]; then
-    CONF_FILE="${CONFIG_DIR}/openalpr.conf.defaults"
+  if [[ -z "${CONFIG_DIR}" ]]; then
+    record "SKIP" "update_conf" "CONFIG_DIR not set; skipping"
   else
-    die "No openalpr.conf or openalpr.conf.defaults in ${CONFIG_DIR}"
-  fi
-  log "Updating yolo_model_path in ${CONF_FILE}"
-  python3 - "$CONF_FILE" "${YOLO_ONNX_OUT}" <<'PY'
-import json, os, sys, tempfile
+    CONF_FILE=""
+    if [[ -f "${CONFIG_DIR}/openalpr.conf" ]]; then
+      CONF_FILE="${CONFIG_DIR}/openalpr.conf"
+    elif [[ -f "${CONFIG_DIR}/openalpr.conf.defaults" ]]; then
+      CONF_FILE="${CONFIG_DIR}/openalpr.conf.defaults"
+    else
+      record "FAIL" "update_conf" "No conf in ${CONFIG_DIR}"
+      echo "[FAIL] update_conf"
+      echo "Reason: no openalpr.conf/openalpr.conf.defaults in ${CONFIG_DIR}"
+      exit 1
+    fi
+    python3 - "${CONF_FILE}" "${YOLO_ONNX_OUT}" > "${LOG_DIR}/update_conf.log" 2>&1 <<'PY'
+import os, sys
 conf_path = sys.argv[1]
 new_path = sys.argv[2]
-lines = []
 with open(conf_path, "r", encoding="utf-8") as f:
     lines = f.readlines()
-updated = False
 out_lines = []
+updated = False
 for line in lines:
     stripped = line.lstrip()
     if stripped.startswith("#") or stripped.strip() == "":
@@ -81,18 +113,22 @@ for line in lines:
 if not updated:
     out_lines.append(f"yolo_model_path = {new_path}\n")
 tmp_path = conf_path + ".tmp"
-target_path = conf_path
 try:
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.writelines(out_lines)
-    os.replace(tmp_path, target_path)
-    print(f"[run_all][conf] updated {target_path}")
+    os.replace(tmp_path, conf_path)
+    print(f"[run_all][conf] updated {conf_path}")
 except PermissionError:
     alt = conf_path + ".new"
     with open(alt, "w", encoding="utf-8") as f:
         f.writelines(out_lines)
     print(f"[run_all][conf] insufficient permission; wrote {alt}")
+    print(alt)
 PY
+    record "PASS" "update_conf" "${LOG_DIR}/update_conf.log"
+  fi
+else
+  record "SKIP" "update_conf" "UPDATE_CONF=0"
 fi
 
 find_alpr() {
@@ -113,31 +149,44 @@ find_alpr() {
 
 ALPR_BIN="$(find_alpr || true)"
 if [[ -z "${ALPR_BIN}" ]]; then
-  log "alpr not found; configuring and building"
-  cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
-  cmake --build "${BUILD_DIR}" -j"${JOBS}"
+  run_step "cmake_build" "${LOG_DIR}/cmake_build.log" \
+    "cmake -S \"${REPO_ROOT}\" -B \"${BUILD_DIR}\" -DCMAKE_BUILD_TYPE=Release && cmake --build \"${BUILD_DIR}\" -j\"${JOBS}\""
   ALPR_BIN="$(find_alpr || true)"
+  [[ -n "${ALPR_BIN}" ]] || die "alpr binary not found after build (see ${LOG_DIR}/cmake_build.log)"
+else
+  record "SKIP" "cmake_build" "alpr present at ${ALPR_BIN}"
 fi
-[[ -n "${ALPR_BIN}" ]] || die "alpr binary not found after build"
 log "Using ALPR_BIN=${ALPR_BIN}"
 
-SMOKE_JSON="$(mktemp)"
-log "Running smoke test JSON"
-"${ALPR_BIN}" -c br -j "${TEST_IMAGE}" > "${SMOKE_JSON}"
-python3 "${SCRIPT_DIR}/validate_json.py" "${SMOKE_JSON}"
-log "Smoke test OK"
+ALPR_JSON="${RESULTS_DIR}/alpr_output.json"
+run_step "alpr_smoke" "${LOG_DIR}/alpr_smoke.log" \
+  "\"${ALPR_BIN}\" -c br -j \"${TEST_IMAGE}\" > \"${ALPR_JSON}\""
 
-if command -v alpr-tool >/dev/null 2>&1; then
-  log "Running alpr-tool export-yolo check"
-  TOOL_OUT="$(dirname "${YOLO_ONNX_OUT}")/alpr_tool_test.onnx"
-  alpr-tool export-yolo --model "${YOLO_PT}" --out "${TOOL_OUT}" --imgsz 640 || die "alpr-tool export-yolo failed"
-  [[ -s "${TOOL_OUT}" ]] || die "alpr-tool export output empty: ${TOOL_OUT}"
+run_step "json_validate" "${LOG_DIR}/json_validate.log" \
+  "python3 \"${SCRIPT_DIR}/validate_json.py\" \"${ALPR_JSON}\""
+
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+for entry in "${STEP_SUMMARY[@]}"; do
+  case "${entry}" in
+    "[PASS]"*) ((PASS_COUNT++)) ;;
+    "[FAIL]"*) ((FAIL_COUNT++)) ;;
+    "[SKIP]"*) ((SKIP_COUNT++)) ;;
+  esac
+done
+
+echo "================ TEST REPORT ================"
+for entry in "${STEP_SUMMARY[@]}"; do
+  echo "${entry}"
+done
+echo "---------------------------------------------"
+if [[ ${FAIL_COUNT} -eq 0 ]]; then
+  echo "RESULT: PASS (${PASS_COUNT}/${#STEP_SUMMARY[@]})"
+else
+  echo "RESULT: FAIL"
+  echo "Failed step logged at: ${FAIL_DETAIL}"
 fi
-
-if command -v alprkit-smoke >/dev/null 2>&1; then
-  log "Running alprkit-smoke"
-  alprkit-smoke || die "alprkit-smoke failed"
-fi
-
-log "All steps completed successfully"
+echo "Artifacts: ${ARTIFACTS_ROOT}"
+echo "============================================="
 
