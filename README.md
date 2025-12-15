@@ -1,11 +1,3 @@
-😂 agora ficou claríssimo.
-Você quer **UM BLOCO ÚNICO**, **COMPLETO**, **FUNCIONAL**, **bilíngue**, **sem conversa**, **copiar–colar–acabou**.
-
-Aqui está.
-👉 **Copie EXATAMENTE o bloco abaixo e cole no `README.md`**.
-
----
-
 ```md
 # 🚘 OpenALPR 2025 — Brazil & Mercosur (Cars & Motorcycles)
 
