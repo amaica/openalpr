@@ -6,9 +6,13 @@
 #include <sstream>
 #include <map>
 #include <iostream>
+#include <climits>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <cstdlib>
 #include <algorithm>
 #include "openalpr/alpr.h"
+#include <stdexcept>
 
 using namespace std;
 using namespace cv;
@@ -18,6 +22,7 @@ struct ConfigWriter {
   string path;
   vector<string> lines;
   map<string,size_t> keyIndex;
+  string lastWritePath;
 
   static string trim(const string& s) {
     const char* ws = " \t";
@@ -46,6 +51,7 @@ struct ConfigWriter {
       }
       idx++;
     }
+    lastWritePath = path;
     return true;
   }
 
@@ -73,6 +79,7 @@ struct ConfigWriter {
   }
 
   bool save() {
+    lastWritePath = path;
     ofstream out(path);
     if (out.good()) {
       for (auto& l : lines) out << l << "\n";
@@ -83,6 +90,7 @@ struct ConfigWriter {
     ofstream out2(alt);
     if (!out2.good()) return false;
     for (auto& l : lines) out2 << l << "\n";
+    lastWritePath = alt;
     cerr << "Could not write " << path << ", wrote " << alt << " instead\n";
     return true;
   }
@@ -91,24 +99,13 @@ struct ConfigWriter {
 struct RoiState {
   bool drawing=false;
   Point start, end;
-  Rect current;
+  Rect draft;
+  Rect applied;
+  bool dirty=false;
 };
 
 static RoiState g_roiState;
-
-static void mouseCb(int event, int x, int y, int, void*) {
-  if (event == EVENT_LBUTTONDOWN) {
-    g_roiState.drawing = true;
-    g_roiState.start = Point(x,y);
-    g_roiState.end = g_roiState.start;
-  } else if (event == EVENT_MOUSEMOVE && g_roiState.drawing) {
-    g_roiState.end = Point(x,y);
-  } else if (event == EVENT_LBUTTONUP) {
-    g_roiState.drawing = false;
-    g_roiState.end = Point(x,y);
-    g_roiState.current = Rect(g_roiState.start, g_roiState.end);
-  }
-}
+static bool g_saveRequested = false;
 
 static Rect normalizedRect(const Rect& r, const Mat& frame) {
   int x = std::max(0, std::min(r.x, frame.cols-1));
@@ -118,16 +115,110 @@ static Rect normalizedRect(const Rect& r, const Mat& frame) {
   return Rect(x,y,w,h);
 }
 
-static void overlayInfo(Mat& frame, const Rect& roi) {
-  if (roi.area() > 0)
-    rectangle(frame, roi, Scalar(0,255,0), 2);
-  string help = "R: draw ROI  S: save  C: clear  Q/ESC: quit";
-  putText(frame, help, Point(10, 20), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(255,255,255), 1, LINE_AA);
-  if (roi.area() > 0) {
-    std::ostringstream oss;
-    oss << "ROI x=" << roi.x << " y=" << roi.y << " w=" << roi.width << " h=" << roi.height;
-    putText(frame, oss.str(), Point(10, 45), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0,255,0), 1, LINE_AA);
+static Rect defaultRoi(const Mat& frame) {
+  return Rect(0, frame.rows/2, frame.cols, frame.rows/2);
+}
+
+static void ensureParentDir(const string& path) {
+  auto pos = path.find_last_of('/');
+  if (pos == string::npos) return;
+  string dir = path.substr(0, pos);
+  if (dir.empty()) return;
+  mkdir(dir.c_str(), 0755);
+}
+
+enum PlayState { STATE_PLAYING, STATE_PAUSED, STATE_STOPPED };
+
+struct Button {
+  string label;
+  Rect area;
+};
+
+static vector<Button> buildButtons(int width) {
+  const int btnW = 110;
+  const int btnH = 32;
+  const int pad = 8;
+  vector<string> labels = {"PLAY","PAUSE","STOP","SAVE ROI","RESET ROI","QUIT"};
+  vector<Button> btns;
+  int x = pad;
+  int y = pad;
+  for (auto& l : labels) {
+    btns.push_back({l, Rect(x,y,btnW,btnH)});
+    x += btnW + pad;
   }
+  return btns;
+}
+
+static void drawButtons(Mat& frame, const vector<Button>& btns, PlayState st) {
+  for (const auto& b : btns) {
+    Scalar bg(30,30,30);
+    if ((st == STATE_PLAYING && b.label == "PLAY") ||
+        (st == STATE_PAUSED && b.label == "PAUSE") ||
+        (st == STATE_STOPPED && b.label == "STOP")) {
+      bg = Scalar(40,80,160);
+    }
+    rectangle(frame, b.area, bg, FILLED);
+    rectangle(frame, b.area, Scalar(200,200,200), 1);
+    putText(frame, b.label, Point(b.area.x+8, b.area.y+b.area.height-10),
+            FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255,255,255), 1, LINE_AA);
+  }
+}
+
+static bool pointInRect(const Point& p, const Rect& r) {
+  return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
+}
+
+static void mouseCb(int event, int x, int y, int, void* userdata) {
+  auto* payload = reinterpret_cast<pair<vector<Button>*, PlayState*>*>(userdata);
+  if (!payload) return;
+  auto& buttons = *payload->first;
+  PlayState& state = *payload->second;
+
+  if (event == EVENT_LBUTTONDOWN) {
+    // Check buttons first
+    for (const auto& b : buttons) {
+      if (pointInRect(Point(x,y), b.area)) {
+        if (b.label == "PLAY") state = STATE_PLAYING;
+        else if (b.label == "PAUSE") state = STATE_PAUSED;
+        else if (b.label == "STOP") state = STATE_STOPPED;
+        else if (b.label == "SAVE ROI") { g_roiState.dirty = true; g_saveRequested = true; }
+        else if (b.label == "RESET ROI") { g_roiState.applied = Rect(); g_roiState.draft = Rect(); g_roiState.dirty = false; }
+        else if (b.label == "QUIT") state = STATE_STOPPED;
+        return;
+      }
+    }
+    // Start drawing ROI
+    g_roiState.drawing = true;
+    g_roiState.start = Point(x,y);
+    g_roiState.end = g_roiState.start;
+  } else if (event == EVENT_MOUSEMOVE && g_roiState.drawing) {
+    g_roiState.end = Point(x,y);
+    g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
+  } else if (event == EVENT_LBUTTONUP) {
+    g_roiState.drawing = false;
+    g_roiState.end = Point(x,y);
+    g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
+    g_roiState.dirty = true;
+  }
+}
+
+static void overlayInfo(Mat& frame, const Rect& roiPx, const string& confPath, bool dirty, bool defaultUsed) {
+  if (roiPx.area() > 0) rectangle(frame, roiPx, Scalar(0,255,0), 2);
+
+  std::ostringstream oss;
+  if (roiPx.area() > 0) {
+    float rx = roiPx.x / static_cast<float>(frame.cols);
+    float ry = roiPx.y / static_cast<float>(frame.rows);
+    float rw = roiPx.width / static_cast<float>(frame.cols);
+    float rh = roiPx.height / static_cast<float>(frame.rows);
+    oss << "ROI % x=" << rx << " y=" << ry << " w=" << rw << " h=" << rh;
+  } else {
+    oss << "ROI disabled";
+  }
+  if (defaultUsed) oss << " [DEFAULT]";
+  if (dirty) oss << " [DIRTY]";
+  putText(frame, oss.str(), Point(10, 70), FONT_HERSHEY_SIMPLEX, 0.55, Scalar(255,255,255),1,LINE_AA);
+  putText(frame, confPath, Point(10, 90), FONT_HERSHEY_SIMPLEX, 0.45, Scalar(200,200,200),1,LINE_AA);
 }
 
 static bool openCapture(const string& src, VideoCapture& cap) {
@@ -175,6 +266,8 @@ static Rect roiFromConfig(const ConfigWriter& cfg, const Mat& frame) {
 static void cmdRoi(const string& source, const string& confPath) {
   ConfigWriter cfg;
   cfg.load(confPath);
+  g_saveRequested = false;
+  if (cfg.lastWritePath.empty()) cfg.lastWritePath = confPath;
   string src = source;
   if (src.empty()) src = cfg.get("video_source", "");
   if (src.empty()) {
@@ -187,41 +280,62 @@ static void cmdRoi(const string& source, const string& confPath) {
     return;
   }
   namedWindow("alpr-tool roi", WINDOW_NORMAL);
-  setMouseCallback("alpr-tool roi", mouseCb, nullptr);
+  auto buttons = buildButtons(800);
+  PlayState playState = STATE_PAUSED;
+  pair<vector<Button>*, PlayState*> userdata{&buttons, &playState};
+  setMouseCallback("alpr-tool roi", mouseCb, &userdata);
 
-  Rect current;
+  Rect roiPx;
+  bool defaultUsed = false;
+  int frameIndex = 0;
+  Mat frame, display;
+  // Start paused: grab first frame
+  if (!cap.read(frame) || frame.empty()) {
+    cerr << "No frames available\n";
+    destroyWindow("alpr-tool roi");
+    return;
+  }
+  roiPx = roiFromConfig(cfg, frame);
+  if (roiPx.area() == 0) { roiPx = defaultRoi(frame); defaultUsed = true; }
+  g_roiState.applied = roiPx;
+  g_roiState.dirty = true;
+  g_saveRequested = true;
+
   while (true) {
-    Mat frame;
-    if (!cap.read(frame) || frame.empty()) break;
-    if (current.area() == 0) current = roiFromConfig(cfg, frame);
-    if (g_roiState.drawing) {
-      g_roiState.current = Rect(g_roiState.start, Point(g_roiState.end.x, g_roiState.end.y));
+    if (playState == STATE_PLAYING) {
+      if (!cap.read(frame) || frame.empty()) { playState = STATE_STOPPED; continue; }
+      frameIndex++;
+    } else if (playState == STATE_STOPPED) {
+      cap.set(CAP_PROP_POS_FRAMES, 0);
+      cap.read(frame);
+      frameIndex = 0;
+      playState = STATE_PAUSED;
     }
-    Rect r = g_roiState.current.area() > 0 ? normalizedRect(g_roiState.current, frame) : current;
-    Mat display = frame.clone();
-    overlayInfo(display, r);
+
+    Rect drawR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : g_roiState.applied;
+    if (drawR.area() == 0) { drawR = defaultRoi(frame); defaultUsed = true; }
+    display = frame.clone();
+    drawButtons(display, buttons, playState);
+    overlayInfo(display, drawR, cfg.path.empty() ? confPath : cfg.path, g_roiState.dirty, defaultUsed);
     imshow("alpr-tool roi", display);
-    char key = (char)waitKey(10);
+    int key = waitKey(30);
     if (key == 'q' || key == 27) break;
-    if (key == 'r') {
-      g_roiState.current = Rect();
-    }
-    if (key == 'c') {
-      disableRoi(cfg);
+    if (key == ' ') playState = (playState == STATE_PLAYING ? STATE_PAUSED : STATE_PLAYING);
+    if (key == 's') { g_roiState.dirty = true; g_saveRequested = true; }
+    if (key == 'r') { g_roiState.draft = Rect(); g_roiState.applied = Rect(); g_roiState.dirty = false; }
+    if (key == '1') { g_roiState.applied = defaultRoi(frame); g_roiState.draft = Rect(); g_roiState.dirty = true; defaultUsed = true; }
+    if (g_roiState.dirty && g_saveRequested) {
+      Rect saveR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : drawR;
+      saveRoiToConfig(saveR, frame, cfg);
       cfg.save();
-      g_roiState.current = Rect();
-      current = Rect();
-      cout << "ROI cleared (enable_roi=0)\n";
+      g_roiState.applied = saveR;
+      g_roiState.draft = Rect();
+      g_roiState.dirty = false;
+      g_saveRequested = false;
+      cout << "ROI saved to " << cfg.lastWritePath << " (percent)\n";
     }
-    if (key == 's' && r.area() > 0) {
-      saveRoiToConfig(r, frame, cfg);
-      cfg.save();
-      current = r;
-      cout << "ROI saved (percent): enable_roi=1 roi_x=" << (float)r.x/frame.cols
-           << " roi_y=" << (float)r.y/frame.rows
-           << " roi_width=" << (float)r.width/frame.cols
-           << " roi_height=" << (float)r.height/frame.rows << endl;
-    }
+
+    if (key == 'p') playState = STATE_PAUSED;
   }
   destroyWindow("alpr-tool roi");
 }
@@ -352,7 +466,24 @@ static void drawResults(Mat& frame, const AlprResults& results) {
   }
 }
 
-static void cmdPreview(const string& source, const string& confPath) {
+static double bboxCenterY(const AlprPlateResult& p) {
+  double cy = 0.0;
+  for (int i=0;i<4;i++) cy += p.plate_points[i].y;
+  return cy / 4.0;
+}
+
+static Rect plateRect(const AlprPlateResult& p) {
+  int minx=INT_MAX, miny=INT_MAX, maxx=0, maxy=0;
+  for (int i=0;i<4;i++) {
+    minx = std::min(minx, p.plate_points[i].x);
+    miny = std::min(miny, p.plate_points[i].y);
+    maxx = std::max(maxx, p.plate_points[i].x);
+    maxy = std::max(maxy, p.plate_points[i].y);
+  }
+  return Rect(minx, miny, maxx-minx, maxy-miny);
+}
+
+static void cmdPreview(const string& source, const string& confPath, const string& logPath) {
   ConfigWriter cfg;
   cfg.load(confPath);
   string src = source.empty() ? cfg.get("video_source","") : source;
@@ -371,21 +502,55 @@ static void cmdPreview(const string& source, const string& confPath) {
     cerr << "Could not load ALPR with config: " << confPath << endl;
     return;
   }
+  ofstream logFile;
+  if (!logPath.empty()) {
+    ensureParentDir(logPath);
+    logFile.open(logPath, ios::out | ios::app);
+    if (!logFile.good()) cerr << "Could not open log file: " << logPath << endl;
+  }
   namedWindow("alpr-tool preview", WINDOW_NORMAL);
   Rect roi;
+  bool defaultUsed=false;
   int64 lastTick = getTickCount();
+  int frameIdx = 0;
+  std::map<string,bool> wasBelow;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
-    if (roi.area() == 0) roi = roiFromConfig(cfg, frame);
+    frameIdx++;
+    if (roi.area() == 0) {
+      roi = roiFromConfig(cfg, frame);
+      if (roi.area() == 0) { roi = defaultRoi(frame); defaultUsed=true; }
+    }
     vector<AlprRegionOfInterest> rois;
     if (roi.area() > 0) rois.push_back(AlprRegionOfInterest(roi.x, roi.y, roi.width, roi.height));
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
     AlprResults results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
-    drawResults(frame, results);
+    double triggerY = frame.rows * 0.5;
+    for (const auto& plate : results.plates) {
+      drawResults(frame, results);
+      double cy = bboxCenterY(plate);
+      bool below = cy < triggerY;
+      bool prevBelow = wasBelow[plate.bestPlate.characters];
+      bool crossed = (prevBelow && !below);
+      wasBelow[plate.bestPlate.characters] = below;
+      if (crossed) {
+        Rect pr = plateRect(plate);
+        std::ostringstream oss;
+        oss << "frame=" << frameIdx
+            << " plate=" << plate.bestPlate.characters
+            << " conf=" << plate.bestPlate.overall_confidence
+            << " bbox=" << pr.x << "," << pr.y << "," << pr.width << "," << pr.height
+            << " crossed_line=true";
+        cout << oss.str() << endl;
+        if (logFile.good()) logFile << oss.str() << "\n";
+      }
+    }
     if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
+    line(frame, Point(0, (int)triggerY), Point(frame.cols-1, (int)triggerY), Scalar(255,255,0), 1, LINE_AA);
+    if (defaultUsed) putText(frame, "ROI DEFAULT (lower half)", Point(10,40), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255,255),1,LINE_AA);
     int64 now = getTickCount();
     double fps = getTickFrequency() / (now - lastTick + 1);
     lastTick = now;
@@ -396,6 +561,7 @@ static void cmdPreview(const string& source, const string& confPath) {
     char key = (char)waitKey(1);
     if (key == 'q' || key == 27) break;
   }
+  if (logFile.good()) logFile.close();
   destroyWindow("alpr-tool preview");
 }
 
@@ -446,12 +612,28 @@ int main(int argc, char** argv) {
 
   try {
     if (sub == "roi") {
-      TCLAP::CmdLine cmd("alpr-tool roi", ' ', "1.0");
-      TCLAP::ValueArg<string> confArg("","conf","Path to config",false,"./config/openalpr.conf.defaults","string");
-      TCLAP::ValueArg<string> srcArg("","source","Video source (rtsp/device/path)",false,"","string");
-      cmd.add(confArg); cmd.add(srcArg);
-      cmd.parse(subArgs);
-      cmdRoi(srcArg.getValue(), confArg.getValue());
+      string conf = "./config/openalpr.conf.defaults";
+      string src;
+      for (size_t i=0;i<subArgs.size();++i) {
+        string a = subArgs[i];
+        auto eatValue = [&](string& target){
+          if (a.find('=') != string::npos) {
+            target = a.substr(a.find('=')+1);
+          } else if (i+1 < subArgs.size()) {
+            target = subArgs[++i];
+          } else {
+            throw std::runtime_error("missing value after " + a);
+          }
+        };
+        if (a.rfind("--conf",0)==0) { eatValue(conf); continue; }
+        if (a.rfind("--source",0)==0) { eatValue(src); continue; }
+        if (a=="-h"||a=="--help") {
+          cout << "alpr-tool roi --source <video|device> [--conf <path>]\n";
+          return 0;
+        }
+        throw std::runtime_error(string("Unknown arg: ")+a);
+      }
+      cmdRoi(src, conf);
       return 0;
     }
     if (sub == "tune") {
@@ -464,12 +646,26 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (sub == "preview") {
-      TCLAP::CmdLine cmd("alpr-tool preview", ' ', "1.0");
-      TCLAP::ValueArg<string> confArg("","conf","Path to config",false,"./config/openalpr.conf.defaults","string");
-      TCLAP::ValueArg<string> srcArg("","source","Video source (rtsp/device/path)",false,"","string");
-      cmd.add(confArg); cmd.add(srcArg);
-      cmd.parse(subArgs);
-      cmdPreview(srcArg.getValue(), confArg.getValue());
+      string conf = "./config/openalpr.conf.defaults";
+      string src;
+      string log = "artifacts/logs/preview.log";
+      for (size_t i=0;i<subArgs.size();++i) {
+        string a = subArgs[i];
+        auto eatValue = [&](string& target){
+          if (a.find('=') != string::npos) target = a.substr(a.find('=')+1);
+          else if (i+1<subArgs.size()) target = subArgs[++i];
+          else throw std::runtime_error("missing value after "+a);
+        };
+        if (a.rfind("--conf",0)==0) { eatValue(conf); continue; }
+        if (a.rfind("--source",0)==0) { eatValue(src); continue; }
+        if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
+        if (a=="-h"||a=="--help") {
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>]\n";
+          return 0;
+        }
+        throw std::runtime_error(string("Unknown arg: ")+a);
+      }
+      cmdPreview(src, conf, log);
       return 0;
     }
     if (sub == "export-yolo") {
@@ -490,6 +686,9 @@ int main(int argc, char** argv) {
     }
   } catch (TCLAP::ArgException& e) {
     cerr << "Error: " << e.error() << " for arg " << e.argId() << endl;
+    return 1;
+  } catch (const std::exception& e) {
+    cerr << "Error: " << e.what() << endl;
     return 1;
   }
 

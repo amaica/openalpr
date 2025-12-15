@@ -68,10 +68,24 @@ run_step() {
 }
 
 CONFIG_DIR="${CONFIG_DIR:-}"
+CONFIG_FILE=""
+if [[ -n "${CONFIG_DIR}" ]]; then
+  if [[ -f "${CONFIG_DIR}/openalpr.conf" ]]; then
+    CONFIG_FILE="${CONFIG_DIR}/openalpr.conf"
+  elif [[ -f "${CONFIG_DIR}/openalpr.conf.defaults" ]]; then
+    CONFIG_FILE="${CONFIG_DIR}/openalpr.conf.defaults"
+  fi
+else
+  if [[ -f "${REPO_ROOT}/config/openalpr.conf.defaults" ]]; then
+    CONFIG_FILE="${REPO_ROOT}/config/openalpr.conf.defaults"
+  fi
+fi
+[[ -n "${CONFIG_FILE}" ]] || die "No config file found (set CONFIG_DIR or ensure config/openalpr.conf.defaults exists)"
 
 log "Using YOLO_PT=${YOLO_PT}"
 log "ONNX output will be ${YOLO_ONNX_OUT}"
 log "UPDATE_CONF=${UPDATE_CONF}"
+log "CONFIG_FILE=${CONFIG_FILE}"
 
 run_step "export_yolo" "${LOG_DIR}/export_yolo.log" \
   "python3 \"${SCRIPT_DIR}/export_yolo.py\" --pt \"${YOLO_PT}\" --out \"${YOLO_ONNX_OUT}\""
@@ -158,9 +172,47 @@ else
 fi
 log "Using ALPR_BIN=${ALPR_BIN}"
 
+ALPR_JSON_RAW="${RESULTS_DIR}/alpr_output.raw"
 ALPR_JSON="${RESULTS_DIR}/alpr_output.json"
-run_step "alpr_smoke" "${LOG_DIR}/alpr_smoke.log" \
-  "\"${ALPR_BIN}\" -c br -j \"${TEST_IMAGE}\" > \"${ALPR_JSON}\""
+ALPR_LOG="${LOG_DIR}/alpr_smoke.log"
+set +e
+"${ALPR_BIN}" --config "${CONFIG_FILE}" -c br -j "${TEST_IMAGE}" > "${ALPR_JSON_RAW}" 2> "${ALPR_LOG}"
+rc_alpr=$?
+set -e
+if [[ ${rc_alpr} -ne 0 ]]; then
+  record "FAIL" "alpr_smoke" "${ALPR_LOG}"
+  echo "[FAIL] alpr_smoke"
+  echo "Command: \"${ALPR_BIN}\" --config \"${CONFIG_FILE}\" -c br -j \"${TEST_IMAGE}\""
+  echo "Log: ${ALPR_LOG}"
+  exit 1
+fi
+python3 - "${ALPR_JSON_RAW}" "${ALPR_JSON}" >> "${ALPR_LOG}" 2>&1 <<'PY'
+import sys, json, pathlib
+raw_path = pathlib.Path(sys.argv[1])
+out_path = pathlib.Path(sys.argv[2])
+text = raw_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+json_lines = [line for line in text if line.strip().startswith("{")]
+if not json_lines:
+    print("[alpr_smoke][error] no JSON object found")
+    sys.exit(1)
+last = json_lines[-1]
+out_path.write_text(last + "\n", encoding="utf-8")
+print("[alpr_smoke] extracted JSON to", out_path)
+try:
+    json.loads(last)
+    print("[alpr_smoke] JSON parse ok")
+except Exception as exc:  # noqa: BLE001
+    print("[alpr_smoke][error] JSON parse failed:", exc)
+    sys.exit(1)
+PY
+rc_parse=$?
+if [[ ${rc_parse} -ne 0 ]]; then
+  record "FAIL" "alpr_smoke" "${ALPR_LOG}"
+  echo "[FAIL] alpr_smoke"
+  echo "Parsing JSON failed, see ${ALPR_LOG}"
+  exit 1
+fi
+record "PASS" "alpr_smoke" "${ALPR_LOG}"
 
 run_step "json_validate" "${LOG_DIR}/json_validate.log" \
   "python3 \"${SCRIPT_DIR}/validate_json.py\" \"${ALPR_JSON}\""
@@ -168,13 +220,15 @@ run_step "json_validate" "${LOG_DIR}/json_validate.log" \
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+set +e
 for entry in "${STEP_SUMMARY[@]}"; do
   case "${entry}" in
-    "[PASS]"*) ((PASS_COUNT++)) ;;
-    "[FAIL]"*) ((FAIL_COUNT++)) ;;
-    "[SKIP]"*) ((SKIP_COUNT++)) ;;
+    "[PASS]"*) PASS_COUNT=$((PASS_COUNT+1)) ;;
+    "[FAIL]"*) FAIL_COUNT=$((FAIL_COUNT+1)) ;;
+    "[SKIP]"*) SKIP_COUNT=$((SKIP_COUNT+1)) ;;
   esac
 done
+set -e
 
 echo "================ TEST REPORT ================"
 for entry in "${STEP_SUMMARY[@]}"; do
