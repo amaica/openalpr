@@ -1,63 +1,90 @@
 ```md
-# 🚘 OpenALPR 2025 — Brazil & Mercosur (Cars & Motorcycles)
+# 🚘 OpenALPR 2025 — Brazil & Mercosur
+### Cars & Motorcycles • YOLOv8 • Production-grade C++
 
-Modernized OpenALPR engine with **native Brazil/Mercosur support**, **real motorcycle plate recognition**, and **YOLOv8-based detection**, designed for **production-grade performance in C++**.
-
-> 🇺🇸 English  
-> 🇧🇷 Português abaixo
+Modernized OpenALPR engine with **native Brazil/Mercosur support**, **real motorcycle OCR**, and **YOLOv8-based detection**, designed for **high-performance, scalable C++ production systems**.
 
 ---
 
 ## 🇺🇸 English
 
-### Overview
-This project is a **deep, production-oriented evolution** of the classic OpenALPR engine.  
-It preserves the original OCR pipeline while replacing outdated detection and country handling with a **modern, scalable, and configurable architecture**.
+## Overview
+This project is a **production-grade architectural evolution** of the classic OpenALPR engine.  
+It **preserves the proven OCR pipeline** while replacing outdated detection, country handling, and scalability limitations with a **modern, configurable, and robust architecture**.
 
-### Key Features
-- Native support for **Brazil old plates (LLLNNNN)** and **Mercosur plates (LLLNLNN)**
-- Explicit hybrid pipeline: **br2 → br** (no dependency on `eu/ad`)
-- **Real motorcycle plate support**, not just detection
-- YOLOv8 ONNX as primary detector (plugable by config)
-- Automatic CPU/GPU backend detection (no flags, no recompilation)
-- Safe fallback to classic detector
-- Process-based parallelism (no shared state, no race conditions)
+## Core Capabilities
 
-### Motorcycle Plates
-- YOLO detects motorcycle plates reliably
+### Brazil & Mercosur (Native)
+- Old Brazilian plates: **LLLNNNN**
+- Mercosur plates: **LLLNLNN**
+- Native hybrid pipeline: **br2 → br**
+- No dependency on `eu/ad`
+- Explicit, deterministic, and logged fallback rules
+
+### Motorcycle Plates (Real Support)
+- YOLOv8 detects motorcycle plates reliably
 - Dedicated OCR profiles:
   - `br_moto.conf`
   - `br2_moto.conf`
-- Automatic profile selection using:
-  - YOLO class (`plate_car` / `plate_moto`), or
-  - bounding box aspect ratio
-- Same validation rules (7 characters), tuned layout
+- Automatic vehicle-type selection using:
+  - YOLO class (`plate_car` / `plate_moto`)
+  - Bounding box aspect ratio (fallback)
+- Same 7-character validation rules with tuned segmentation/layout
 
-### Architecture
+### Modern Detection
+- YOLOv8 exported to **ONNX**
+- Model loaded dynamically via configuration
+- No recompilation required to update models
+- Automatic backend selection (CPU / CUDA when available)
+- Safe fallback to classical detector
+
+### Performance & Scalability
+- Process-based parallelism (not threads)
+- One YOLO + one ALPR instance per worker
+- Linear scaling with CPU/GPU
+- No shared state, no race conditions
+- Suitable for batch processing and video streams
+
+## Architecture
 ```
 
-Image / Frame
+Input (Image / Video Frame)
 |
 v
-YOLO Detector (car / moto)
++----------------------+
+|  YOLOv8 Detector    |
+| (car / motorcycle)  |
++----------------------+
 |
 v
-Vehicle Profile Selector
-|-- br2 / br
-|-- br2_moto / br_moto
++----------------------+
+| Vehicle Type Selector|
++----------------------+
 |
 v
-OpenALPR OCR Pipeline
++----------------------+
+| OCR Profile Selector |
+| br2 / br             |
+| br2_moto / br_moto   |
++----------------------+
 |
 v
-Pattern Validation + Fallback
++----------------------+
+| OpenALPR OCR Engine  |
++----------------------+
 |
 v
-Result (CLI / JSON / API)
++----------------------+
+| Pattern Validation   |
+| + Explicit Fallback  |
++----------------------+
+|
+v
+Output (CLI / JSON / API)
 
 ````
 
-### Configuration Example
+## Configuration Example
 ```ini
 detector_type = auto
 yolo_model_path = /etc/openalpr/models/yolov8n_plates.onnx
@@ -71,7 +98,7 @@ moto_aspect_ratio_min = 0.6
 moto_aspect_ratio_max = 1.4
 ````
 
-### Build
+## Build
 
 ```bash
 mkdir build
@@ -80,64 +107,79 @@ cmake ..
 make -j$(nproc)
 ```
 
-### Usage
+## Usage
 
 ```bash
 alpr -c br car.jpg
 alpr -c br motorcycle.jpg
 ```
 
+## Disclaimer
+
+This project is open source and **not officially affiliated** with OpenALPR Inc.
+
 ---
 
 ## 🇧🇷 Português
 
-### Visão Geral
+## Visão Geral
 
-Este projeto é uma **evolução profunda e voltada à produção** do OpenALPR clássico.
-Ele mantém o pipeline de OCR original, substituindo apenas o que envelheceu, com foco em **Brasil, Mercosul, motos e performance real**.
+Este projeto é uma **evolução arquitetural de nível produção** do OpenALPR clássico.
+Ele **mantém o pipeline de OCR consolidado** e substitui os componentes obsoletos por uma **arquitetura moderna, configurável e robusta**.
 
-### Principais Recursos
+## Capacidades Principais
 
-* Suporte nativo a placas **antigas** e **Mercosul**
+### Brasil e Mercosul (Nativo)
+
+* Placas antigas: **LLLNNNN**
+* Placas Mercosul: **LLLNLNN**
 * Pipeline híbrido explícito: **br2 → br**
-* **Leitura real de placas de moto**, não apenas detecção
-* Detector moderno com **YOLOv8 ONNX**
-* Detecção automática de CPU/GPU
-* Fallback seguro para detector clássico
-* Paralelismo por processos (seguro e escalável)
+* Sem dependência de `eu/ad`
+* Fallback determinístico e logado
 
-### Placas de Moto
+### Placas de Moto (Suporte Real)
 
-* Detecção via YOLO
+* Detecção confiável com YOLOv8
 * Perfis OCR dedicados:
 
   * `br_moto.conf`
   * `br2_moto.conf`
-* Seleção automática do perfil por classe ou proporção
-* OCR ajustado para layout de moto
+* Seleção automática por:
 
-### Build
+  * classe do YOLO (`plate_car` / `plate_moto`)
+  * proporção da bounding box (fallback)
+* Validação de 7 caracteres com layout ajustado
+
+### Detecção Moderna
+
+* YOLOv8 em **ONNX**
+* Modelo carregado via configuração
+* Sem recompilação para atualizar modelos
+* Seleção automática de backend (CPU / CUDA)
+* Fallback seguro para detector clássico
+
+### Performance e Escalabilidade
+
+* Paralelismo por processos
+* Um YOLO + um ALPR por worker
+* Escala linear com CPU/GPU
+* Sem estado compartilhado
+
+## Build e Uso
 
 ```bash
 mkdir build
 cd build
 cmake ..
 make -j$(nproc)
-```
 
-### Uso
-
-```bash
 alpr -c br carro.jpg
 alpr -c br moto.jpg
 ```
 
----
+## Aviso Legal
 
-## Disclaimer / Aviso Legal
-
-This project is open source and **not officially affiliated** with OpenALPR Inc.
-Projeto open source **sem afiliação oficial** à OpenALPR Inc.
+Projeto open source, **sem afiliação oficial** com a OpenALPR Inc.
 
 ```
-
+```
