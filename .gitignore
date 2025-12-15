@@ -49,6 +49,7 @@ website/
 utilities/
 samples/
 runtime_data/keypoints/source.txt
+artifacts/
 
 # Editor / OS
 .DS_Store
