@@ -17,7 +17,6 @@ It **preserves the proven OCR pipeline** while replacing outdated detection, cou
 - Old Brazilian plates: **LLLNNNN**
 - Mercosur plates: **LLLNLNN**
 - Native hybrid pipeline: **br2 → br**
-- No dependency on `eu/ad`
 - Explicit, deterministic, and logged fallback rules
 
 ### Motorcycle Plates (Real Support)
@@ -131,7 +130,6 @@ Ele **mantém o pipeline de OCR consolidado** e substitui os componentes obsolet
 - Placas antigas: **LLLNNNN**
 - Placas Mercosul: **LLLNLNN**
 - Pipeline híbrido explícito: **br2 → br**
-- Sem dependência de `eu/ad`
 - Fallback determinístico e logado
 
 ### Placas de Moto (Suporte Real)
