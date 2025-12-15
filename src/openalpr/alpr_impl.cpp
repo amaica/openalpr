@@ -122,6 +122,7 @@ namespace alpr
       else
       {
         std::cout << "[roi] disabled (invalid ROI computed). Using full frame." << std::endl;
+        effectiveRois.clear();
       }
     }
 
