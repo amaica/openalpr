@@ -118,7 +118,7 @@ int main( int argc, const char** argv )
     templatePattern = templatePatternArg.getValue();
     topn = topNArg.getValue();
     measureProcessingTime = clockSwitch.getValue();
-    do_motiondetection = motiondetect.getValue();
+	do_motiondetection = motiondetect.getValue();
     jobs = jobsArg.getValue();
   }
   catch (TCLAP::ArgException &e)    // catch any exceptions
@@ -152,7 +152,7 @@ int main( int argc, const char** argv )
   {
     std::cerr << "Parallel mode (--jobs) is only supported for image file inputs. Running sequentially." << std::endl;
   }
-
+  
   cv::Mat frame;
 
   Alpr alpr(country, configFile);

@@ -420,40 +420,40 @@ void streamRecognitionThread(void* arg)
   }
   else
   {
-    /* Create processing threads */
-    const int num_threads = tdata->analysis_threads;
-    tthread::thread* threads[num_threads];
+  /* Create processing threads */
+  const int num_threads = tdata->analysis_threads;
+  tthread::thread* threads[num_threads];
 
-    for (int i = 0; i < num_threads; i++) {
-        LOG4CPLUS_INFO(logger, "Spawning Thread " << i );
-        tthread::thread* t = new tthread::thread(processingThread, (void*) tdata);
-        threads[i] = t;
-    }
+  for (int i = 0; i < num_threads; i++) {
+      LOG4CPLUS_INFO(logger, "Spawning Thread " << i );
+      tthread::thread* t = new tthread::thread(processingThread, (void*) tdata);
+      threads[i] = t;
+  }
+  
+  cv::Mat frame;
+  LoggingVideoBuffer videoBuffer(logger);
+  videoBuffer.connect(tdata->stream_url, 5);
+  LOG4CPLUS_INFO(logger, "Starting camera " << tdata->camera_id);
+  
+  while (daemon_active)
+  {
+    std::vector<cv::Rect> regionsOfInterest;
+    int response = videoBuffer.getLatestFrame(&frame, regionsOfInterest);
     
-    cv::Mat frame;
-    LoggingVideoBuffer videoBuffer(logger);
-    videoBuffer.connect(tdata->stream_url, 5);
-    LOG4CPLUS_INFO(logger, "Starting camera " << tdata->camera_id);
-    
-    while (daemon_active)
-    {
-      std::vector<cv::Rect> regionsOfInterest;
-      int response = videoBuffer.getLatestFrame(&frame, regionsOfInterest);
-      
-      if (response != -1) {
-        if (framesQueue.empty()) {
-          framesQueue.push(frame.clone());
-        }
+    if (response != -1) {
+      if (framesQueue.empty()) {
+        framesQueue.push(frame.clone());
       }
-      
-      usleep(10000);
     }
     
-    videoBuffer.disconnect();
-    LOG4CPLUS_INFO(logger, "Video processing ended");
-    delete tdata;
-    for (int i = 0; i < num_threads; i++) {
-      delete threads[i];
+    usleep(10000);
+  }
+  
+  videoBuffer.disconnect();
+  LOG4CPLUS_INFO(logger, "Video processing ended");
+  delete tdata;
+  for (int i = 0; i < num_threads; i++) {
+    delete threads[i];
     }
   }
 }
