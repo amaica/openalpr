@@ -242,6 +242,46 @@ namespace alpr
     brHybridFallbackRegion = getString(ini, defaultIni, "", "br_hybrid_fallback_region", "");
     brHybridMinConfidence = getFloat(ini, defaultIni, "", "br_hybrid_min_confidence", 80);
 
+    // OCR / plugins / vehicle attributes (parser only; no runtime changes)
+    ocrConfig.primary = getString(ini, defaultIni, "", "ocr_primary", "openalpr");
+    ocrConfig.policy = getString(ini, defaultIni, "", "ocr_policy", "primary_only");
+    std::transform(ocrConfig.policy.begin(), ocrConfig.policy.end(), ocrConfig.policy.begin(), ::tolower);
+    if (ocrConfig.policy != "primary_only" &&
+        ocrConfig.policy != "fallback_on_low_confidence" &&
+        ocrConfig.policy != "ensemble")
+    {
+      std::cerr << "[config][warn] invalid ocr_policy=" << ocrConfig.policy << ", using primary_only" << std::endl;
+      ocrConfig.policy = "primary_only";
+    }
+    ocrConfig.minConfidence = getFloat(ini, defaultIni, "", "ocr_min_confidence", 0.0f);
+    if (ocrConfig.minConfidence < 0.0f) {
+      std::cerr << "[config][warn] ocr_min_confidence < 0; clamping to 0" << std::endl;
+      ocrConfig.minConfidence = 0.0f;
+    }
+    ocrConfig.fallbackEnabled = getBoolean(ini, defaultIni, "", "ocr_fallback_enabled", false);
+    ocrConfig.fallbackPlugin = getString(ini, defaultIni, "", "ocr_fallback_plugin", "deepseek");
+    ocrConfig.fallbackMinConfidence = getFloat(ini, defaultIni, "", "ocr_fallback_min_confidence", 80.0f);
+    if (ocrConfig.fallbackMinConfidence < 0.0f) {
+      std::cerr << "[config][warn] ocr_fallback_min_confidence < 0; clamping to 0" << std::endl;
+      ocrConfig.fallbackMinConfidence = 0.0f;
+    }
+    ocrConfig.fallbackTimeoutMs = getInt(ini, defaultIni, "", "ocr_fallback_timeout_ms", 800);
+    if (ocrConfig.fallbackTimeoutMs < 0) {
+      std::cerr << "[config][warn] ocr_fallback_timeout_ms < 0; clamping to 0" << std::endl;
+      ocrConfig.fallbackTimeoutMs = 0;
+    }
+
+    pluginConfig.enabled = getBoolean(ini, defaultIni, "", "plugins_enabled", false);
+    pluginConfig.path = getString(ini, defaultIni, "", "plugins_path", "/opt/alpr/plugins");
+
+    vehicleAttrsConfig.enabled = getBoolean(ini, defaultIni, "", "vehicle_attrs_enabled", false);
+    vehicleAttrsConfig.plugin = getString(ini, defaultIni, "", "vehicle_attrs_plugin", "onnx_vehicle");
+    vehicleAttrsConfig.minConfidence = getFloat(ini, defaultIni, "", "vehicle_attrs_min_confidence", 0.7f);
+    if (vehicleAttrsConfig.minConfidence < 0.0f) {
+      std::cerr << "[config][warn] vehicle_attrs_min_confidence < 0; clamping to 0" << std::endl;
+      vehicleAttrsConfig.minConfidence = 0.0f;
+    }
+
     vehicleProfileMode = getString(ini, defaultIni, "", "vehicle_profile_mode", "auto");
     std::transform(vehicleProfileMode.begin(), vehicleProfileMode.end(), vehicleProfileMode.begin(), ::tolower);
     motoAspectRatioMin = getFloat(ini, defaultIni, "", "moto_aspect_ratio_min", 0.9f);
@@ -277,6 +317,21 @@ namespace alpr
     debugPostProcess = 	getBoolean(ini, defaultIni, "", "debug_postprocess", 	false);
     debugShowImages = 	getBoolean(ini, defaultIni, "", "debug_show_images",	false);
     debugPauseOnFrame = 	getBoolean(ini, defaultIni, "", "debug_pause_on_frame",	false);
+
+    if (debugGeneral) {
+      std::cout << "[config][ocr] primary=" << ocrConfig.primary
+                << " policy=" << ocrConfig.policy
+                << " min_conf=" << ocrConfig.minConfidence << std::endl;
+      std::cout << "[config][ocr][fallback] enabled=" << (ocrConfig.fallbackEnabled ? 1 : 0)
+                << " plugin=" << ocrConfig.fallbackPlugin
+                << " min_conf=" << ocrConfig.fallbackMinConfidence
+                << " timeout_ms=" << ocrConfig.fallbackTimeoutMs << std::endl;
+      std::cout << "[config][plugins] enabled=" << (pluginConfig.enabled ? 1 : 0)
+                << " path=" << pluginConfig.path << std::endl;
+      std::cout << "[config][vehicle_attrs] enabled=" << (vehicleAttrsConfig.enabled ? 1 : 0)
+                << " plugin=" << vehicleAttrsConfig.plugin
+                << " min_conf=" << vehicleAttrsConfig.minConfidence << std::endl;
+    }
 
   }
   

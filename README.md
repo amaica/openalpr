@@ -127,6 +127,26 @@ alpr-config preview
 ```
 Isso abre a UI para desenhar ROI, ajustar preproc e fazer preview.
 
+### Plugin & OCR Configuration
+O arquivo de configuração suporta parâmetros opcionais para fallback de OCR e plugins (apenas leitura, sem execução de plugins por padrão):
+```
+ocr_primary = openalpr
+ocr_policy = primary_only
+ocr_min_confidence = 0
+ocr_fallback_enabled = 0
+ocr_fallback_plugin = deepseek
+ocr_fallback_min_confidence = 80
+ocr_fallback_timeout_ms = 800
+
+plugins_enabled = 0
+plugins_path = /opt/alpr/plugins
+
+vehicle_attrs_enabled = 0
+vehicle_attrs_plugin = onnx_vehicle
+vehicle_attrs_min_confidence = 0.7
+```
+Esses valores são lidos na inicialização e registrados em nível de debug. Nenhum plugin é carregado por padrão.
+
 #### Atalhos e UX (alpr-tool)
 - Abrir configurador com vídeo local: `alpr-tool roi --source /caminho/video.avi --conf /opt/alpr/openalpr.conf`
 - Inicia pausado; botões: [PLAY] [PAUSE] [STOP] [SAVE ROI] [RESET ROI] [QUIT]
