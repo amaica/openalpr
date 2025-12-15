@@ -106,6 +106,7 @@ struct RoiState {
 
 static RoiState g_roiState;
 static bool g_saveRequested = false;
+static bool g_quitRequested = false;
 
 struct DisplayMapper {
   int origW=1, origH=1;
@@ -183,6 +184,23 @@ struct Button {
   Rect area;
 };
 
+struct Track {
+  int id=0;
+  Rect bbox;
+  double centerY=0.0;
+  double emaCenterY=0.0;
+  bool hasEma=false;
+  bool crossedA=false;
+  double tA=0.0;
+  bool fired=false;
+  double speedKmh=0.0;
+  string reason;
+  string plate;
+  double plateConf=0.0;
+  int lastFrame=0;
+  double lastTsMs=0.0;
+};
+
 static vector<Button> buildButtons(int width) {
   const int btnW = 110;
   const int btnH = 32;
@@ -223,6 +241,20 @@ struct MouseCtx {
   DisplayMapper* mapper;
 };
 
+struct SpeedConfig {
+  bool enabled=false;
+  string mode="lines";
+  double yA=0.0, yB=0.0;
+  double dist_m=0.0;
+  string timeSource="fps";
+  double minKmh=0.0;
+  double maxKmh=300.0;
+  string smoothing="none";
+  double emaAlpha=0.2;
+  bool log=false;
+  bool requirePlate=true;
+};
+
 static void mouseCb(int event, int x, int y, int, void* userdata) {
   auto* payload = reinterpret_cast<MouseCtx*>(userdata);
   if (!payload) return;
@@ -239,7 +271,7 @@ static void mouseCb(int event, int x, int y, int, void* userdata) {
         else if (b.label == "STOP") state = STATE_STOPPED;
         else if (b.label == "SAVE ROI") { g_roiState.dirty = true; g_saveRequested = true; }
         else if (b.label == "RESET ROI") { g_roiState.applied = Rect(); g_roiState.draft = Rect(); g_roiState.dirty = false; }
-        else if (b.label == "QUIT") state = STATE_STOPPED;
+        else if (b.label == "QUIT") { g_quitRequested = true; state = STATE_STOPPED; cout << "QUIT CLICKED\n"; }
         return;
       }
     }
@@ -322,10 +354,28 @@ static Rect roiFromConfig(const ConfigWriter& cfg, const Mat& frame) {
   return normalizedRect(Rect(x,y,w,h), frame);
 }
 
+static SpeedConfig loadSpeedConfig(const ConfigWriter& cfg) {
+  SpeedConfig s;
+  s.enabled = cfg.get("speed_enabled","0") == "1";
+  s.mode = cfg.get("speed_mode","lines");
+  s.yA = atof(cfg.get("speed_line_a_y_percent","40").c_str())/100.0;
+  s.yB = atof(cfg.get("speed_line_b_y_percent","70").c_str())/100.0;
+  s.dist_m = atof(cfg.get("speed_dist_m","10").c_str());
+  s.timeSource = cfg.get("speed_time_source","timestamp");
+  s.minKmh = atof(cfg.get("speed_min_kmh","5").c_str());
+  s.maxKmh = atof(cfg.get("speed_max_kmh","250").c_str());
+  s.smoothing = cfg.get("speed_smoothing","ema");
+  s.emaAlpha = atof(cfg.get("speed_ema_alpha","0.25").c_str());
+  s.log = cfg.get("speed_log","1") == "1";
+  s.requirePlate = cfg.get("speed_require_plate","1") == "1";
+  return s;
+}
+
 static void cmdRoi(const string& source, const string& confPath) {
   ConfigWriter cfg;
   cfg.load(confPath);
   g_saveRequested = false;
+  g_quitRequested = false;
   if (cfg.lastWritePath.empty()) cfg.lastWritePath = confPath;
   string src = source;
   if (src.empty()) src = cfg.get("video_source", "");
@@ -391,6 +441,8 @@ static void cmdRoi(const string& source, const string& confPath) {
     if (key == 's') { g_roiState.dirty = true; g_saveRequested = true; }
     if (key == 'r') { g_roiState.draft = Rect(); g_roiState.applied = Rect(); g_roiState.dirty = false; }
     if (key == '1') { g_roiState.applied = defaultRoi(frame); g_roiState.draft = Rect(); g_roiState.dirty = true; defaultUsed = true; }
+    if (g_quitRequested) { cout << "EXITING ROI TOOL\n"; break; }
+
     if (g_roiState.dirty && g_saveRequested) {
       Rect saveR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : currentOrig;
       saveRoiToConfig(saveR, frame, cfg);
@@ -406,11 +458,14 @@ static void cmdRoi(const string& source, const string& confPath) {
            << static_cast<float>(saveR.y)/frame.rows << ","
            << static_cast<float>(saveR.width)/frame.cols << ","
            << static_cast<float>(saveR.height)/frame.rows << ")\n";
+      cout << "orig=" << frame.cols << "x" << frame.rows
+           << " disp=" << mapper.dispW << "x" << mapper.dispH
+           << " scale=" << mapper.scale << " off_x=" << mapper.offX << " off_y=" << mapper.offY << "\n";
     }
 
     if (key == 'p') playState = STATE_PAUSED;
   }
-  destroyWindow("alpr-tool roi");
+  try { destroyWindow("alpr-tool roi"); } catch (...) { cv::destroyAllWindows(); }
 }
 
 struct PreprocParams {
@@ -559,6 +614,7 @@ static Rect plateRect(const AlprPlateResult& p) {
 static void cmdPreview(const string& source, const string& confPath, const string& logPath) {
   ConfigWriter cfg;
   cfg.load(confPath);
+  SpeedConfig speedCfg = loadSpeedConfig(cfg);
   string src = source.empty() ? cfg.get("video_source","") : source;
   if (src.empty()) {
     cout << "Enter video source (rtsp/device/video path): ";
@@ -586,7 +642,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   bool defaultUsed=false;
   int64 lastTick = getTickCount();
   int frameIdx = 0;
-  std::map<string,bool> wasBelow;
+  double emaY = -1.0;
+  bool crossedA = false;
+  bool fired = false;
+  double tA = 0.0;
+  double lastSpeed = 0.0;
+  double fpsReported = cap.get(CAP_PROP_FPS);
+  bool fpsValid = fpsReported > 1.0 && fpsReported < 300.0;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
@@ -601,28 +663,67 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
     AlprResults results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
-    double triggerY = frame.rows * 0.5;
-    for (const auto& plate : results.plates) {
-      drawResults(frame, results);
-      double cy = bboxCenterY(plate);
-      bool below = cy < triggerY;
-      bool prevBelow = wasBelow[plate.bestPlate.characters];
-      bool crossed = (prevBelow && !below);
-      wasBelow[plate.bestPlate.characters] = below;
-      if (crossed) {
+    double lineA = speedCfg.yA * frame.rows;
+    double lineB = speedCfg.yB * frame.rows;
+    if (speedCfg.enabled) {
+      for (const auto& plate : results.plates) {
         Rect pr = plateRect(plate);
-        std::ostringstream oss;
-        oss << "frame=" << frameIdx
-            << " plate=" << plate.bestPlate.characters
-            << " conf=" << plate.bestPlate.overall_confidence
-            << " bbox=" << pr.x << "," << pr.y << "," << pr.width << "," << pr.height
-            << " crossed_line=true";
-        cout << oss.str() << endl;
-        if (logFile.good()) logFile << oss.str() << "\n";
+        Point c((pr.x+pr.width/2), (pr.y+pr.height/2));
+        if (roi.area() > 0 && !roi.contains(c)) continue; // ROI gate
+        double cy = c.y;
+        if (emaY < 0) emaY = cy;
+        else if (speedCfg.smoothing == "ema") emaY = speedCfg.emaAlpha * cy + (1.0 - speedCfg.emaAlpha) * emaY;
+        else emaY = cy;
+
+        double tNow = 0.0;
+        bool tOk = false;
+        double tsMs = cap.get(CAP_PROP_POS_MSEC);
+        if (speedCfg.timeSource == "timestamp" && tsMs > 0) { tNow = tsMs/1000.0; tOk = true; }
+        else if (fpsValid) { tNow = frameIdx / fpsReported; tOk = true; }
+
+        if (!crossedA && emaY >= lineA && tOk) {
+          crossedA = true;
+          tA = tNow;
+        }
+        if (crossedA && !fired && emaY >= lineB && tOk) {
+          double dt = tNow - tA;
+          if (dt > 0 && speedCfg.dist_m > 0) {
+            double mps = speedCfg.dist_m / dt;
+            double kmh = mps * 3.6;
+            if (kmh >= speedCfg.minKmh && kmh <= speedCfg.maxKmh) {
+              fired = true;
+              lastSpeed = kmh;
+              std::ostringstream oss;
+              oss << "frame=" << frameIdx
+                  << " plate=" << plate.bestPlate.characters
+                  << " conf=" << plate.bestPlate.overall_confidence
+                  << " speed_kmh=" << kmh
+                  << " dt=" << dt
+                  << " mode=lines crossed=A->B";
+              cout << oss.str() << endl;
+              if (logFile.good()) logFile << oss.str() << "\n";
+            }
+          }
+        }
+      }
+    } else {
+      drawResults(frame, results);
+    }
+
+    if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
+    if (speedCfg.enabled) {
+      int yApx = static_cast<int>(lineA);
+      int yBpx = static_cast<int>(lineB);
+      line(frame, Point(0, yApx), Point(frame.cols-1, yApx), Scalar(255,255,0), 1, LINE_AA);
+      line(frame, Point(0, yBpx), Point(frame.cols-1, yBpx), Scalar(255,255,0), 1, LINE_AA);
+      std::ostringstream so;
+      so << "speed lines A=" << speedCfg.yA*100 << "% B=" << speedCfg.yB*100 << "% dist=" << speedCfg.dist_m << "m";
+      putText(frame, so.str(), Point(10, 60), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255,255,255),1,LINE_AA);
+      if (fired) {
+        std::ostringstream ss; ss << lastSpeed << " km/h";
+        putText(frame, ss.str(), Point(10,80), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0,255,255),2,LINE_AA);
       }
     }
-    if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
-    line(frame, Point(0, (int)triggerY), Point(frame.cols-1, (int)triggerY), Scalar(255,255,0), 1, LINE_AA);
     if (defaultUsed) putText(frame, "ROI DEFAULT (lower half)", Point(10,40), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255,255),1,LINE_AA);
     int64 now = getTickCount();
     double fps = getTickFrequency() / (now - lastTick + 1);
