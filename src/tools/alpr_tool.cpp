@@ -107,6 +107,55 @@ struct RoiState {
 static RoiState g_roiState;
 static bool g_saveRequested = false;
 
+struct DisplayMapper {
+  int origW=1, origH=1;
+  int dispW=1, dispH=1;
+  int offX=0, offY=0;
+  double scale=1.0;
+
+  void setOriginal(int w, int h) {
+    origW = std::max(1, w);
+    origH = std::max(1, h);
+    const double maxW = 1280.0;
+    const double maxH = 720.0;
+    scale = std::min(1.0, std::min(maxW / origW, maxH / origH));
+    dispW = static_cast<int>(std::round(origW * scale));
+    dispH = static_cast<int>(std::round(origH * scale));
+    offX = 0;
+    offY = 0;
+  }
+
+  Point origToDisp(const Point& p) const {
+    int x = static_cast<int>(std::round(p.x * scale)) + offX;
+    int y = static_cast<int>(std::round(p.y * scale)) + offY;
+    return Point(x,y);
+  }
+
+  Point dispToOrig(const Point& p) const {
+    double x = (p.x - offX) / scale;
+    double y = (p.y - offY) / scale;
+    int xi = static_cast<int>(std::round(x));
+    int yi = static_cast<int>(std::round(y));
+    xi = std::min(std::max(0, xi), origW-1);
+    yi = std::min(std::max(0, yi), origH-1);
+    return Point(xi, yi);
+  }
+
+  Rect origToDisp(const Rect& r) const {
+    Point p1 = origToDisp(Point(r.x, r.y));
+    Point p2 = origToDisp(Point(r.x + r.width, r.y + r.height));
+    return Rect(Point(std::min(p1.x,p2.x), std::min(p1.y,p2.y)),
+                Point(std::max(p1.x,p2.x), std::max(p1.y,p2.y)));
+  }
+
+  Rect dispToOrig(const Rect& r) const {
+    Point p1 = dispToOrig(Point(r.x, r.y));
+    Point p2 = dispToOrig(Point(r.x + r.width, r.y + r.height));
+    return Rect(Point(std::min(p1.x,p2.x), std::min(p1.y,p2.y)),
+                Point(std::max(p1.x,p2.x), std::max(p1.y,p2.y)));
+  }
+};
+
 static Rect normalizedRect(const Rect& r, const Mat& frame) {
   int x = std::max(0, std::min(r.x, frame.cols-1));
   int y = std::max(0, std::min(r.y, frame.rows-1));
@@ -168,11 +217,18 @@ static bool pointInRect(const Point& p, const Rect& r) {
   return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
 }
 
+struct MouseCtx {
+  vector<Button>* buttons;
+  PlayState* state;
+  DisplayMapper* mapper;
+};
+
 static void mouseCb(int event, int x, int y, int, void* userdata) {
-  auto* payload = reinterpret_cast<pair<vector<Button>*, PlayState*>*>(userdata);
+  auto* payload = reinterpret_cast<MouseCtx*>(userdata);
   if (!payload) return;
-  auto& buttons = *payload->first;
-  PlayState& state = *payload->second;
+  auto& buttons = *payload->buttons;
+  PlayState& state = *payload->state;
+  DisplayMapper& mapper = *payload->mapper;
 
   if (event == EVENT_LBUTTONDOWN) {
     // Check buttons first
@@ -187,30 +243,33 @@ static void mouseCb(int event, int x, int y, int, void* userdata) {
         return;
       }
     }
-    // Start drawing ROI
+    // Start drawing ROI in display coords, convert to original
     g_roiState.drawing = true;
-    g_roiState.start = Point(x,y);
-    g_roiState.end = g_roiState.start;
+    Point p = mapper.dispToOrig(Point(x,y));
+    g_roiState.start = p;
+    g_roiState.end = p;
   } else if (event == EVENT_MOUSEMOVE && g_roiState.drawing) {
-    g_roiState.end = Point(x,y);
+    Point p = mapper.dispToOrig(Point(x,y));
+    g_roiState.end = p;
     g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
   } else if (event == EVENT_LBUTTONUP) {
     g_roiState.drawing = false;
-    g_roiState.end = Point(x,y);
+    Point p = mapper.dispToOrig(Point(x,y));
+    g_roiState.end = p;
     g_roiState.draft = Rect(g_roiState.start, g_roiState.end);
     g_roiState.dirty = true;
   }
 }
 
-static void overlayInfo(Mat& frame, const Rect& roiPx, const string& confPath, bool dirty, bool defaultUsed) {
-  if (roiPx.area() > 0) rectangle(frame, roiPx, Scalar(0,255,0), 2);
+static void overlayInfo(Mat& frame, const Rect& roiDisp, const Rect& roiOrig, const DisplayMapper& mapper, const string& confPath, bool dirty, bool defaultUsed) {
+  if (roiDisp.area() > 0) rectangle(frame, roiDisp, Scalar(0,255,0), 2);
 
   std::ostringstream oss;
-  if (roiPx.area() > 0) {
-    float rx = roiPx.x / static_cast<float>(frame.cols);
-    float ry = roiPx.y / static_cast<float>(frame.rows);
-    float rw = roiPx.width / static_cast<float>(frame.cols);
-    float rh = roiPx.height / static_cast<float>(frame.rows);
+  if (roiOrig.area() > 0) {
+    float rx = roiOrig.x / static_cast<float>(mapper.origW);
+    float ry = roiOrig.y / static_cast<float>(mapper.origH);
+    float rw = roiOrig.width / static_cast<float>(mapper.origW);
+    float rh = roiOrig.height / static_cast<float>(mapper.origH);
     oss << "ROI % x=" << rx << " y=" << ry << " w=" << rw << " h=" << rh;
   } else {
     oss << "ROI disabled";
@@ -279,25 +338,27 @@ static void cmdRoi(const string& source, const string& confPath) {
     cerr << "Could not open source: " << src << endl;
     return;
   }
-  namedWindow("alpr-tool roi", WINDOW_NORMAL);
+  namedWindow("alpr-tool roi", WINDOW_AUTOSIZE);
   auto buttons = buildButtons(800);
   PlayState playState = STATE_PAUSED;
-  pair<vector<Button>*, PlayState*> userdata{&buttons, &playState};
-  setMouseCallback("alpr-tool roi", mouseCb, &userdata);
+  DisplayMapper mapper;
+  MouseCtx mctx{&buttons, &playState, &mapper};
+  setMouseCallback("alpr-tool roi", mouseCb, &mctx);
 
-  Rect roiPx;
+  Rect roiOrig;
   bool defaultUsed = false;
   int frameIndex = 0;
-  Mat frame, display;
+  Mat frame, display, canvas;
   // Start paused: grab first frame
   if (!cap.read(frame) || frame.empty()) {
     cerr << "No frames available\n";
     destroyWindow("alpr-tool roi");
     return;
   }
-  roiPx = roiFromConfig(cfg, frame);
-  if (roiPx.area() == 0) { roiPx = defaultRoi(frame); defaultUsed = true; }
-  g_roiState.applied = roiPx;
+  mapper.setOriginal(frame.cols, frame.rows);
+  roiOrig = roiFromConfig(cfg, frame);
+  if (roiOrig.area() == 0) { roiOrig = defaultRoi(frame); defaultUsed = true; }
+  g_roiState.applied = roiOrig;
   g_roiState.dirty = true;
   g_saveRequested = true;
 
@@ -312,11 +373,17 @@ static void cmdRoi(const string& source, const string& confPath) {
       playState = STATE_PAUSED;
     }
 
-    Rect drawR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : g_roiState.applied;
-    if (drawR.area() == 0) { drawR = defaultRoi(frame); defaultUsed = true; }
-    display = frame.clone();
+    mapper.setOriginal(frame.cols, frame.rows);
+
+    Rect currentOrig = g_roiState.draft.area() > 0 ? g_roiState.draft : g_roiState.applied;
+    currentOrig = normalizedRect(currentOrig, frame);
+    if (currentOrig.area() == 0) { currentOrig = defaultRoi(frame); defaultUsed = true; }
+
+    resize(frame, canvas, Size(mapper.dispW, mapper.dispH));
+    Rect dispR = mapper.origToDisp(currentOrig);
+    display = canvas.clone();
     drawButtons(display, buttons, playState);
-    overlayInfo(display, drawR, cfg.path.empty() ? confPath : cfg.path, g_roiState.dirty, defaultUsed);
+    overlayInfo(display, dispR, currentOrig, mapper, cfg.path.empty() ? confPath : cfg.path, g_roiState.dirty, defaultUsed);
     imshow("alpr-tool roi", display);
     int key = waitKey(30);
     if (key == 'q' || key == 27) break;
@@ -325,14 +392,20 @@ static void cmdRoi(const string& source, const string& confPath) {
     if (key == 'r') { g_roiState.draft = Rect(); g_roiState.applied = Rect(); g_roiState.dirty = false; }
     if (key == '1') { g_roiState.applied = defaultRoi(frame); g_roiState.draft = Rect(); g_roiState.dirty = true; defaultUsed = true; }
     if (g_roiState.dirty && g_saveRequested) {
-      Rect saveR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : drawR;
+      Rect saveR = g_roiState.draft.area() > 0 ? normalizedRect(g_roiState.draft, frame) : currentOrig;
       saveRoiToConfig(saveR, frame, cfg);
       cfg.save();
       g_roiState.applied = saveR;
       g_roiState.draft = Rect();
       g_roiState.dirty = false;
       g_saveRequested = false;
-      cout << "ROI saved to " << cfg.lastWritePath << " (percent)\n";
+      cout << "ROI saved to " << cfg.lastWritePath << " (percent)"
+           << " px=(" << saveR.x << "," << saveR.y << "," << saveR.width << "," << saveR.height << ")"
+           << " perc=("
+           << static_cast<float>(saveR.x)/frame.cols << ","
+           << static_cast<float>(saveR.y)/frame.rows << ","
+           << static_cast<float>(saveR.width)/frame.cols << ","
+           << static_cast<float>(saveR.height)/frame.rows << ")\n";
     }
 
     if (key == 'p') playState = STATE_PAUSED;
