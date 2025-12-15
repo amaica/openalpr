@@ -117,24 +117,6 @@ make -j$(nproc)
   - `INSTALL_DEPS` (padrão: 1)
   - `RUN_TESTS` (padrão: 1)
   - `TEST_IMAGE` (obrigatória para o smoke test)
-- Pré-requisitos: Linux Debian/Ubuntu com sudo
-- Comando único:
-  ```bash
-  sudo TEST_IMAGE=/caminho/para/imagem.jpg ./scripts/install.sh
-  ```
-- O script:
-  - Detecta a distro
-  - Instala dependências via apt (non-interactive)
-  - Configura e compila com CMake
-  - Instala os binários
-  - Executa smoke test com a imagem indicada
-- Variáveis de ambiente suportadas:
-  - `PREFIX` (padrão: /usr/local)
-  - `BUILD_DIR` (padrão: build)
-  - `JOBS` (padrão: nproc)
-  - `INSTALL_DEPS` (padrão: 1)
-  - `RUN_TESTS` (padrão: 1)
-  - `TEST_IMAGE` (obrigatória para o smoke test)
 
 ### Interface de configuração
 Após instalar, use a interface visual via OpenCV HighGUI:
