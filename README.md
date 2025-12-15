@@ -127,6 +127,18 @@ alpr-config preview
 ```
 Isso abre a UI para desenhar ROI, ajustar preproc e fazer preview.
 
+## Testes (bateria automatizada)
+Exemplo:
+```
+TEST_IMAGE=/caminho/img.jpg CONFIG_DIR=/opt/alpr UPDATE_CONF=1 ./scripts/tests/run_all.sh
+```
+Variáveis principais:
+- `TEST_IMAGE`: imagem obrigatória para smoke test
+- `CONFIG_DIR`: usa /opt/alpr se existir, senão ./config
+- `YOLO_PT`: modelo .pt (padrão apontando para SynkiSentinel)
+- `YOLO_ONNX_OUT`: caminho de saída do ONNX
+- `UPDATE_CONF`: 1 para atualizar yolo_model_path no .conf selecionado
+
 ## Usage
 ```bash
 alpr -c br car.jpg
