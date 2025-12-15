@@ -127,6 +127,12 @@ alpr-config preview
 ```
 Isso abre a UI para desenhar ROI, ajustar preproc e fazer preview.
 
+#### Atalhos e UX (alpr-tool)
+- Abrir configurador com vídeo local: `alpr-tool roi --source /caminho/video.avi --conf /opt/alpr/openalpr.conf`
+- Inicia pausado; botões: [PLAY] [PAUSE] [STOP] [SAVE ROI] [RESET ROI] [QUIT]
+- Teclas: Space(play/pause), S(save), R(reset), Q/Esc(quit), 1(ROI default metade inferior)
+- ROI default automática: metade inferior (x=0,y=50%,w=100%,h=50%) se não houver ROI no conf
+
 ## Testes (bateria automatizada)
 ```bash
 TEST_IMAGE=/caminho/img.jpg ./scripts/tests/run_all.sh
