@@ -1,47 +1,43 @@
-# 🚘 OpenALPR 2025 — Brazil & Mercosur
-### Cars & Motorcycles • YOLOv8 • Production-grade C++
+# OpenALPR 2025 — Brazil & Mercosur
+### Cars & Motorcycles • YOLOv8 • C++
 
-Modernized OpenALPR engine with **native Brazil/Mercosur support**, **real motorcycle OCR**, and **YOLOv8-based detection**, designed for **high-performance, scalable C++ production systems**.
+Modernized OpenALPR engine with native Brazil/Mercosur support, motorcycle OCR profiles, and YOLOv8 detection for server-side Linux deployments.
 
 ---
 
 ## 🇺🇸 English
 
 ## Overview
-This project is a **production-grade architectural evolution** of the classic OpenALPR engine.  
-It **preserves the proven OCR pipeline** while replacing outdated detection, country handling, and scalability limitations with a **modern, configurable, and robust architecture**.
+Evolution of the classic OpenALPR engine. Keeps the OCR pipeline and adds modern detection, hybrid country handling, and process-based scalability.
 
 ## Core Capabilities
 
+<<<<<<< HEAD
 ### Brazil & Mercosur (Native)
 - Old Brazilian plates: **LLLNNNN**
 - Mercosur plates: **LLLNLNN**
 - Native hybrid pipeline: **br2 → br**
 - Explicit, deterministic, and logged fallback rules
+=======
+### Brazil & Mercosur
+- Old Brazilian plates: LLLNNNN
+- Mercosur plates: LLLNLNN
+- Hybrid pipeline: br2 → br, logged fallback, no eu/ad dependency
+>>>>>>> 4ffc6cc (docs(readme): normalize tone to technical C/C++ system style)
 
-### Motorcycle Plates (Real Support)
-- YOLOv8 detects motorcycle plates reliably
-- Dedicated OCR profiles:
-  - `br_moto.conf`
-  - `br2_moto.conf`
-- Automatic vehicle-type selection using:
-  - YOLO class (`plate_car` / `plate_moto`)
-  - Bounding box aspect ratio (fallback)
-- Same 7-character validation rules with tuned segmentation/layout
+### Motorcycle Plates
+- YOLOv8 detection for moto plates
+- OCR profiles: `br_moto.conf`, `br2_moto.conf`
+- Vehicle-type selection: YOLO class or aspect ratio
 
-### Modern Detection
-- YOLOv8 exported to **ONNX**
-- Model loaded dynamically via configuration
-- No recompilation required to update models
-- Automatic backend selection (CPU / CUDA when available)
-- Safe fallback to classical detector
+### Detection
+- YOLOv8 ONNX, configurable model path
+- CPU/CUDA backend auto-selection, fallback to classic detector
 
-### Performance & Scalability
-- Process-based parallelism (not threads)
-- One YOLO + one ALPR instance per worker
-- Linear scaling with CPU/GPU
-- No shared state, no race conditions
-- Suitable for batch processing and video streams
+### Performance
+- Process-based parallelism
+- One YOLO + one ALPR per worker
+- Suitable for batch and video streams
 
 ## Architecture
 ```
@@ -94,17 +90,12 @@ moto_aspect_ratio_min = 0.6
 moto_aspect_ratio_max = 1.4
 ```
 
-## Build
+## Build (from repo root)
 ```bash
 mkdir build
 cd build
 cmake ..
 make -j$(nproc)
-```
-
-Install (one-liner, non-interativo):
-```bash
-sudo TEST_IMAGE=/caminho/para/imagem.jpg ./scripts/install.sh
 ```
 
 ## Instalação automática (Linux Debian/Ubuntu)
@@ -165,6 +156,7 @@ This project is open source and **not officially affiliated** with OpenALPR Inc.
 
 ---
 
+<<<<<<< HEAD
 ## 🇧🇷 Português
 
 ## Visão Geral
@@ -215,3 +207,7 @@ alpr -c br moto.jpg
 
 ## Aviso Legal
 Projeto open source, **sem afiliação oficial** com a OpenALPR Inc.
+=======
+# Aviso Legal
+Projeto open source, sem afiliação oficial com a OpenALPR Inc.
+>>>>>>> 4ffc6cc (docs(readme): normalize tone to technical C/C++ system style)

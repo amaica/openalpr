@@ -1,0 +1,11 @@
+{
+  "runtime_data_preferred": "./runtime_data_invalid_selftest",
+  "runtime_data_resolved": "/usr/share/openalpr/runtime_data",
+  "cascade_loaded": true,
+  "detector_not_loaded": false,
+  "crossing_frame": 115,
+  "alpr_calls_pre_crossing": 0,
+  "alpr_calls_post_crossing": 576,
+  "plates_found_post_crossing": 576,
+  "frames_after_crossing": 577
+}
