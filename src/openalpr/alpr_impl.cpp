@@ -121,8 +121,8 @@ namespace alpr
       }
       else
       {
-        std::cout << "[roi] disabled (invalid ROI computed). Using full frame." << std::endl;
-        effectiveRois.clear();
+        // Keep caller-provided ROIs; if none were provided, full frame will be used below
+        std::cout << "[roi] disabled (invalid ROI computed). Using provided/full-frame ROIs." << std::endl;
       }
     }
 
