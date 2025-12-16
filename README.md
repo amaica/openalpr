@@ -153,21 +153,25 @@ Esses valores são lidos na inicialização e registrados em nível de debug. Ne
 - Teclas: Space(play/pause), S(save), R(reset), Q/Esc(quit), 1(ROI default metade inferior)
 - ROI default automática: metade inferior (x=0,y=50%,w=100%,h=50%) se não houver ROI no conf
 
-#### Plate logging e qualidade
-- Preview com logging de placas:
+#### Plate logging
+- Rodar a suíte automatizada:
   ```bash
-  mkdir -p artifacts/logs
-  ./build/src/alpr-tool preview --conf artifacts/config_video_test/openalpr.conf --source /path/to/video.avi --log-plates=1 --log-file artifacts/logs/output_plates.log --log-every-n-frames=1 --log-throttle-ms=300
+  ./scripts/tests/plate_logs_suite.sh
   ```
-- Stress por processos (fallback multithread):
+  Gera logs em `artifacts/logs/<video>_plates.log` e resumo em `artifacts/reports/plate_logs_report.txt`.
+- Flags do preview:
+  - `--log-plates=1|0` (default 0)
+  - `--log-plates-every-n=<int>` (default 10)
+  - `--log-plates-file=<path>` (opcional; se vazio, cai no console)
+  - `--max-seconds=<int>` (0 = até o fim do vídeo)
+  Exemplo:
   ```bash
-  FRAME=artifacts/tests/frames/frame1.jpg LEVELS="2 4 8" LOOPS=50 ./scripts/tests/thread_stress.sh
-  # Relatório: artifacts/reports/thread_stress.txt
-  ```
-- Acurácia com ground truth:
-  ```bash
-  python3 scripts/tests/plate_accuracy.py --csv artifacts/tests/ground_truth.csv --out artifacts/reports/plate_accuracy_report.json
-  # Texto: artifacts/reports/plate_accuracy_report.txt
+  ./build/src/alpr-tool preview \
+    --conf artifacts/config_video_test/openalpr.conf \
+    --source /path/to/video.avi \
+    --log-plates=1 \
+    --log-plates-every-n=10 \
+    --log-plates-file artifacts/logs/sample_plates.log
   ```
 
 #### Detecção padrão e skip detection (opcional)

@@ -323,9 +323,11 @@ struct PreviewRuntimeOptions {
   bool logPlates=false;
   bool logEvents=true;
   int logThrottleMs=400;
-  int logEveryNFrames=1;
+  int logPlatesEveryN=10;
   int maxTracks=32;
   int trackTtlMs=1000;
+  std::string logPlatesFile;
+  int maxSeconds=0;
 };
 
 static double iouRect(const Rect& a, const Rect& b) {
@@ -896,9 +898,23 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     logFile.open(logPath, ios::out | ios::app);
     if (!logFile.good()) cerr << "Could not open log file: " << logPath << endl;
   }
+  ofstream plateLogFile;
+  if (!opts.logPlatesFile.empty()) {
+    ensureParentDir(opts.logPlatesFile);
+    plateLogFile.open(opts.logPlatesFile, ios::out | ios::trunc);
+    if (!plateLogFile.good()) cerr << "Could not open plate log file: " << opts.logPlatesFile << endl;
+  }
   auto logLine = [&](const std::string& s){
     cout << s << endl;
     if (logFile.good()) logFile << s << "\n";
+  };
+  auto logPlateLine = [&](const std::string& s){
+    if (plateLogFile.good()) plateLogFile << s << "\n";
+    else cout << s << endl;
+  };
+  auto plateLog = [&](const std::string& s){
+    logLine(s);
+    logPlateLine(s);
   };
   namedWindow("alpr-tool preview", WINDOW_NORMAL);
   Rect roi;
@@ -915,11 +931,17 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   const double tickFreq = getTickFrequency();
   auto wallSeconds = [&](){ return static_cast<double>(getTickCount()) / tickFreq; };
   const bool trackingActive = speedCfg.enabled || opts.logPlates;
+  const std::string detectorLabel = (cfg.get("skip_detection","0") == "1") ? "skip" : "classic";
   bool detectorLogged = false;
+  double startWall = wallSeconds();
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
     frameIdx++;
+    if (opts.maxSeconds > 0) {
+      double elapsed = wallSeconds() - startWall;
+      if (elapsed >= opts.maxSeconds) break;
+    }
     if (roi.area() == 0) {
       roi = roiFromConfig(cfg, frame);
       if (roi.area() == 0) { roi = defaultRoi(frame); defaultUsed=true; }
@@ -933,6 +955,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     double lineB = (roi.area() > 0 ? roi.y + speedCfg.yB * roi.height : speedCfg.yB * frame.rows);
 
     AlprResults results;
+    if (opts.maxSeconds > 0 && (wallSeconds() - startWall) >= opts.maxSeconds) break;
+
     if (selfTest) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
@@ -1011,13 +1035,22 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         string plateText = !plate.bestPlate.characters.empty() ? plate.bestPlate.characters :
                            (!tr.best_plate_text.empty() ? tr.best_plate_text : string("<none>"));
         double plateConf = plate.bestPlate.overall_confidence >= 0 ? plate.bestPlate.overall_confidence : tr.best_plate_conf;
-        string reason = plate.bestPlate.characters.empty() ? "no_ocr" : "ok";
+        string reason = "ok";
+        if (plate.bestPlate.characters.empty()) {
+          if (plate.topNPlates.size() == 0) reason = "no_candidates";
+          else reason = "ocr_empty";
+          if (plate.bestPlate.overall_confidence > 0 && plate.bestPlate.overall_confidence < 50) reason = "low_confidence";
+        }
         int candidates = static_cast<int>(plate.topNPlates.size());
         string country = plate.region.empty() ? cfg.get("country","") : plate.region;
 
         if (opts.logPlates && inRoi) {
-          bool everyN = (opts.logEveryNFrames <= 1) || (frameIdx % opts.logEveryNFrames == 0);
-          bool shouldLog = everyN && (plateText != tr.last_logged_plate_text || (tr.last_logged_t < 0 || (tNow - tr.last_logged_t) >= throttleSec));
+          bool foundText = !plate.bestPlate.characters.empty();
+          bool everyN = (opts.logPlatesEveryN <= 1) || (frameIdx % opts.logPlatesEveryN == 0);
+          bool shouldLog = (foundText || everyN);
+          if (foundText && tr.last_logged_t >= 0 && (tNow - tr.last_logged_t) < throttleSec && plateText == tr.last_logged_plate_text) {
+            shouldLog = false;
+          }
           if (shouldLog) {
             std::ostringstream oss;
             oss << "frame=" << frameIdx
@@ -1026,9 +1059,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
                 << " conf=" << plateConf
                 << " bbox=" << pr.x << "," << pr.y << "," << pr.width << "," << pr.height
                 << " country=" << country
-                << " candidates=" << candidates;
+                << " candidates=" << candidates
+                << " detector=" << detectorLabel;
             if (reason != "ok") oss << " reason=" << reason;
-            logLine(oss.str());
+            plateLog(oss.str());
             tr.last_logged_plate_text = plateText;
             tr.last_logged_t = tNow;
           }
@@ -1088,27 +1122,17 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         return (tNow - t.last_seen_t) > trackTtlSec;
       }), tracks.end());
       if (opts.logPlates && !anyDetections) {
-        bool everyN = (opts.logEveryNFrames <= 1) || (frameIdx % opts.logEveryNFrames == 0);
+        bool everyN = (opts.logPlatesEveryN <= 1) || (frameIdx % opts.logPlatesEveryN == 0);
         if (everyN) {
           std::ostringstream oss;
           oss << "frame=" << frameIdx
               << " plate=<none>"
               << " conf=0"
               << " bbox=0,0,0,0"
-              << " reason=no_detection";
-          logLine(oss.str());
+              << " detector=" << detectorLabel
+              << " reason=no_candidates";
+          plateLog(oss.str());
         }
-      }
-    } else if (opts.logPlates) {
-      bool everyN = (opts.logEveryNFrames <= 1) || (frameIdx % opts.logEveryNFrames == 0);
-      if (everyN) {
-        std::ostringstream oss;
-        oss << "frame=" << frameIdx
-            << " plate=<none>"
-            << " conf=0"
-            << " bbox=0,0,0,0"
-            << " reason=no_detection";
-        logLine(oss.str());
       }
     } else {
       drawResults(frame, results);
@@ -1254,19 +1278,20 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
         if (a.rfind("--country",0)==0) { eatValue(countryArg); continue; }
+        if (a.rfind("--log-plates-every-n",0)==0) { string v; eatValue(v); opts.logPlatesEveryN = std::max(1, stoi(v)); continue; }
+        if (a.rfind("--log-plates-file",0)==0) { eatValue(opts.logPlatesFile); continue; }
         if (a.rfind("--log-plates",0)==0) { string v; eatValue(v); opts.logPlates = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--max-seconds",0)==0) { string v; eatValue(v); opts.maxSeconds = std::max(0, stoi(v)); continue; }
         if (a.rfind("--log-events",0)==0) { string v; eatValue(v); opts.logEvents = (v!="0"&&v!="false"); continue; }
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
-        if (a.rfind("--log-every-n-frames",0)==0) { string v; eatValue(v); opts.logEveryNFrames = std::max(1, stoi(v)); continue; }
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest] [--log-plates 0|1] [--log-every-n-frames <int>] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>]\n";
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest] [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
-      if (!opts.logPlates) opts.logEveryNFrames = std::max(opts.logEveryNFrames, 1);
       cmdPreview(src, conf, log, selfTest, opts, countryArg);
       return 0;
     }
