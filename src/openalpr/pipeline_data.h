@@ -65,6 +65,9 @@ namespace alpr
       // Same data, just not broken down by line
       std::vector<cv::Rect> charRegionsFlat;
 
+      // Diagnostics
+      int ocr_passes_total = 0;
+
 
 
 

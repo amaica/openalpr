@@ -108,6 +108,11 @@ namespace alpr
     response.results.img_width = all_results[0].results.img_width;
     response.results.total_processing_time_ms = all_results[0].results.total_processing_time_ms;
     response.results.regionsOfInterest = all_results[0].results.regionsOfInterest;
+    response.results.profile = all_results[0].results.profile;
+    response.results.ocr_passes_total = 0;
+    for (const auto& r : all_results) {
+      response.results.ocr_passes_total += r.results.ocr_passes_total;
+    }
 
 
     vector<vector<AlprPlateResult> > clusters = findClusters();

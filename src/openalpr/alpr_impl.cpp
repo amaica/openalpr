@@ -508,6 +508,7 @@ namespace alpr
   AlprFullDetails AlprImpl::analyzeSingleCountry(cv::Mat detectColorImg, cv::Mat detectGrayImg, cv::Mat processColorImg, cv::Mat processGrayImg, std::vector<cv::Rect> warpedRegionsOfInterest)
   {
     AlprFullDetails response;
+    response.results.profile = config->profile;
     
     AlprRecognizers country_recognizers = recognizers[config->country];
     timespec startTime;
@@ -608,6 +609,7 @@ namespace alpr
 
         country_recognizers.ocr->performOCR(&pipeline_data);
         country_recognizers.ocr->postProcessor.analyze(plateResult.region, topN);
+        response.results.ocr_passes_total += pipeline_data.ocr_passes_total;
 
         timespec resultsStartTime;
         getTimeMonotonic(&resultsStartTime);
@@ -797,6 +799,8 @@ namespace alpr
     cJSON_AddNumberToObject(root,"img_width",	results.img_width	  );
     cJSON_AddNumberToObject(root,"img_height",	results.img_height	  );
     cJSON_AddNumberToObject(root,"processing_time_ms", results.total_processing_time_ms );
+    cJSON_AddStringToObject(root,"profile", results.profile.c_str());
+    cJSON_AddNumberToObject(root,"ocr_passes_total", results.ocr_passes_total);
 
     // Add the regions of interest to the JSON
     cJSON *rois;
@@ -925,6 +929,10 @@ namespace alpr
     allResults.img_width = cJSON_GetObjectItem(root, "img_width")->valueint;
     allResults.img_height = cJSON_GetObjectItem(root, "img_height")->valueint;
     allResults.total_processing_time_ms = cJSON_GetObjectItem(root, "processing_time_ms")->valueint;
+    cJSON* profileObj = cJSON_GetObjectItem(root, "profile");
+    if (profileObj && profileObj->valuestring) allResults.profile = profileObj->valuestring;
+    cJSON* passesObj = cJSON_GetObjectItem(root, "ocr_passes_total");
+    allResults.ocr_passes_total = passesObj ? passesObj->valueint : 0;
 
 
     cJSON* rois = cJSON_GetObjectItem(root,"regions_of_interest");
