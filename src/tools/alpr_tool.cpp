@@ -1186,6 +1186,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   }
   cout << "[config] runtime_data_path_resolved=" << rt.path
        << " (from=" << (rt.source.empty() ? "auto" : rt.source) << ")\n";
+  std::string cascadePath = joinPath(joinPath(rt.path, "region"), country + ".xml");
+  cout << "[config] region_country=" << country << " cascade=" << cascadePath << "\n";
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
