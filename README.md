@@ -102,6 +102,29 @@ make -j"$(nproc)"
   --source /path/to/video.mp4
 ```
 
+## GUI (Qt configurator)
+
+Build:
+```bash
+cd build
+cmake ..
+make -j"$(nproc)" alpr-configurator
+```
+
+Run:
+```bash
+./build/src/tools/alpr-configurator/alpr-configurator
+./build/src/tools/alpr-configurator/alpr-configurator --project artifacts/projects/demo.alprproj.json
+```
+
+Workflow (multi-source):
+- File → New Project Wizard para criar um `.alprproj.json`
+- Source dock: Add / Duplicate / Remove fontes (RTSP/vídeo/câmera)
+- Cada source aponta para um `.conf` (ex.: `artifacts/configs/openalpr.garagem.conf`)
+- Tabs de config (Runtime, Detection, OCR, ROI/Crossing, Prewarp, Logging, Advanced, Raw) preservam chaves desconhecidas (round-trip)
+- Tools → Doctor valida runtime/cascade/tessdata e atualiza status
+- File → Save/Save As grava o projeto e os `.conf` de cada fonte
+
 ---
 
 ## Performance recipes (practical and measurable)
