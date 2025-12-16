@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <regex>
 #include "openalpr/alpr.h"
+#include "openalpr/config.h"
 #include <stdexcept>
 
 using namespace std;
@@ -918,6 +919,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   if (!alpr.isLoaded()) {
     cerr << "Could not load ALPR with config: " << confPath << endl;
     return;
+  }
+  if (alpr.getConfig()) {
+    cout << "[config] runtime_data_path_resolved=" << alpr.getConfig()->getRuntimeBaseDir() << "\n";
   }
     if (selfTest) speedCfg.enabled = true;
   ofstream logFile;

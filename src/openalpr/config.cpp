@@ -90,19 +90,21 @@ namespace alpr
       this->runtimeBaseDir = runtime_dir;
     }
 
-    if ((DirectoryExists(this->runtimeBaseDir.c_str()) == false) &&
-            (DirectoryExists((getExeDir() + RUNTIME_DIR).c_str())))
-    {
-            // Runtime dir in the config is invalid and there is a runtime dir in the same dir as the exe.
-      this->runtimeBaseDir = getExeDir() + RUNTIME_DIR;
-
-    }
-
-    if (DirectoryExists(this->runtimeBaseDir.c_str()) == false)
-    {
+    if (DirectoryExists(this->runtimeBaseDir.c_str())) {
+      std::cout << "[config] runtime_data_path_resolved=" << this->runtimeBaseDir;
+      if (runtimeResolvedAuto)
+        std::cout << " (auto)";
+      else
+        std::cout << " (from config)";
+      std::cout << std::endl;
+    } else {
       std::cerr << "--(!) Runtime directory '" << this->runtimeBaseDir << "' does not exist!" << endl;
-      std::cerr << "--(!)                   Please update the OpenALPR config file: '" << config_file_path << "'" << endl;
-      std::cerr << "--(!)                   to point to the correct location of your runtime_dir" << endl;
+      std::cerr << "--(!) Attempted fallbacks: "
+                << "/usr/share/openalpr/runtime_data, "
+                << "/usr/local/share/openalpr/runtime_data, "
+                << "./runtime_data, "
+                << getExeDir() + "/runtime_data" << endl;
+      std::cerr << "--(!) Please update runtime_dir in config or install runtime_data." << endl;
       return;
     }
 
@@ -166,11 +168,32 @@ namespace alpr
     }
     
     runtimeBaseDir = getString(ini,defaultIni, "", "runtime_dir", DEFAULT_RUNTIME_DATA_DIR);
+    std::string initialRuntime = runtimeBaseDir;
    
     // Special hack to allow config files to work if the package hasn't been installed
     // Cmake will do this replacement on deploy, but this is useful in development
     if (runtimeBaseDir.find("${CMAKE_INSTALL_PREFIX}") >= 0)
       runtimeBaseDir = replaceAll(runtimeBaseDir, "${CMAKE_INSTALL_PREFIX}", INSTALL_PREFIX);
+
+    auto resolveRuntimeDir = [&](const std::string& current)->std::string {
+      std::vector<std::string> candidates;
+      if (!current.empty()) candidates.push_back(current);
+      candidates.push_back(getExeDir() + RUNTIME_DIR);
+      candidates.push_back("/usr/share/openalpr/runtime_data");
+      candidates.push_back("/usr/local/share/openalpr/runtime_data");
+      candidates.push_back("./runtime_data");
+      candidates.push_back(getExeDir() + "/runtime_data");
+      for (const auto& c : candidates) {
+        if (DirectoryExists(c.c_str())) return c;
+      }
+      return "";
+    };
+
+    std::string resolvedRuntime = resolveRuntimeDir(runtimeBaseDir);
+    if (!resolvedRuntime.empty()) {
+      runtimeBaseDir = resolvedRuntime;
+    }
+    runtimeResolvedAuto = (runtimeBaseDir != initialRuntime);
     
     detectorType = getString(ini, defaultIni, "", "detector_type", "auto");
     std::transform(detectorType.begin(), detectorType.end(), detectorType.begin(), ::tolower);
@@ -513,6 +536,24 @@ namespace alpr
     if (fileExists((this->runtimeBaseDir + "/ocr/tessdata/" + this->ocrLanguage + ".traineddata").c_str()) == false)
     {
       std::cerr << "--(!) Runtime directory '" << this->runtimeBaseDir << "' is invalid.  Missing OCR data for the country: '" << country<< "'!" << endl;
+      return false;
+    }
+
+    std::string cascadePath = this->runtimeBaseDir + CASCADE_DIR + country + ".xml";
+    if (!fileExists(cascadePath.c_str()))
+    {
+      std::vector<std::string> regionFiles = getFilesInDir((this->runtimeBaseDir + CASCADE_DIR).c_str());
+      std::cerr << "--(!) Cascade file not found for country '" << country << "' expected: " << cascadePath << std::endl;
+      if (regionFiles.size() > 0)
+      {
+        std::cerr << "--(!) Available region files (first 5): ";
+        for (size_t i=0;i<regionFiles.size() && i<5;i++)
+        {
+          if (i>0) std::cerr << ", ";
+          std::cerr << regionFiles[i];
+        }
+        std::cerr << std::endl;
+      }
       return false;
     }
 
