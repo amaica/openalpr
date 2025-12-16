@@ -337,6 +337,25 @@ void MainWindow::createTabsConfigPanel() {
   configTabs_->addTab(advTab, "Advanced (All keys)");
   configTabs_->addTab(rawTab, "Raw Config");
 
+  auto markDirty = [this](){
+    setWindowModified(true);
+    updateStatusIndicators();
+  };
+  for (auto le : {uriEdit_, fpsEdit_, frameSkipEdit_, bufferEdit_, confPathEdit_, runtimeEdit_, detectorTypeEdit_, detectorConfigEdit_,
+                  burstEdit_, voteWindowEdit_, minVotesEdit_, lineEdit_, motionThreshEdit_, motionAreaEdit_, motionRatioEdit_,
+                  debounceEdit_, armFramesEdit_, logEveryNEdit_, logFileEdit_, reportJsonEdit_}) {
+    if (le) connect(le, &QLineEdit::textChanged, this, markDirty);
+  }
+  for (auto cb : {typeCombo_, countryEdit_, vehicleCombo_, scenarioCombo_}) {
+    if (cb) connect(cb, &QComboBox::currentTextChanged, this, markDirty);
+  }
+  for (auto chk : {skipDetectionCheck_, fallbackCheck_, prewarpEnableCheck_, ocrAfterCrossCheck_, logPlatesCheck_, logOcrCheck_}) {
+    if (chk) connect(chk, &QCheckBox::toggled, this, markDirty);
+  }
+  connect(roiEdit_, &QPlainTextEdit::textChanged, this, markDirty);
+  connect(prewarpPointsEdit_, &QPlainTextEdit::textChanged, this, markDirty);
+  connect(rawEdit_, &QPlainTextEdit::textChanged, this, [this](){ setWindowModified(true); });
+
   auto dockCfg = new QDockWidget("Config", this);
   dockCfg->setWidget(configTabs_);
   addDockWidget(Qt::RightDockWidgetArea, dockCfg);
