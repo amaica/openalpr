@@ -17,11 +17,58 @@
 #include <QSortFilterProxyModel>
 #include <QTableWidgetItem>
 #include <QStatusBar>
+#include <cstdlib>
 
 #include <filesystem>
 #include <opencv2/objdetect/objdetect.hpp>
 
 using namespace std;
+namespace {
+struct RtResolve {
+  bool ok=false;
+  bool preferredInvalid=false;
+  std::string preferredReason;
+  std::string path;
+  std::string reason;
+  std::vector<std::string> tried;
+};
+
+static bool cascadeLoadable(const std::string& cascadePath) {
+  cv::CascadeClassifier cc;
+  return cc.load(cascadePath);
+}
+
+static RtResolve resolveRuntimeValidated(const std::string& country, const std::string& preferred) {
+  RtResolve rr;
+  std::vector<std::string> candidates;
+  auto push = [&](const std::string& p){ if(!p.empty()) candidates.push_back(p); };
+  const char* envRt = getenv("OPENALPR_RUNTIME_DATA");
+  if (!preferred.empty()) push(preferred);
+  if (envRt) push(envRt);
+  push("/usr/share/openalpr/runtime_data");
+  push("/usr/local/share/openalpr/runtime_data");
+  push("./runtime_data");
+  push((std::filesystem::current_path()/ "runtime_data").string());
+  push((std::filesystem::current_path().parent_path()/ "runtime_data").string());
+
+  bool first = true;
+  for (const auto& base : candidates) {
+    rr.tried.push_back(base);
+    std::filesystem::path p(base);
+    std::filesystem::path region = p / "region";
+    std::filesystem::path cascade = region / (country + ".xml");
+    if (!std::filesystem::exists(p)) { rr.reason = "runtime_data path missing"; goto next; }
+    if (!std::filesystem::exists(region)) { rr.reason = "region dir missing"; goto next; }
+    if (!std::filesystem::exists(cascade)) { rr.reason = "cascade file missing: " + cascade.string(); goto next; }
+    if (!cascadeLoadable(cascade.string())) { rr.reason = "cascade not loadable: " + cascade.string(); goto next; }
+    rr.ok = true; rr.path = base; return rr;
+next:
+    if (first && !preferred.empty()) { rr.preferredInvalid = true; rr.preferredReason = rr.reason; }
+    first = false;
+  }
+  return rr;
+}
+}
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildUi();
@@ -405,29 +452,14 @@ void MainWindow::onAdvancedFilter(const QString& text) {
 }
 
 void MainWindow::onAutoSetup() {
-  // resolve runtime_data and list countries
   namespace fs = std::filesystem;
-  // Try candidates similar to tool logic
-  std::vector<std::string> candidates;
-  auto push = [&](const std::string& p){ if(!p.empty()) candidates.push_back(p); };
-  const char* envRt = getenv("OPENALPR_RUNTIME_DATA");
-  if (envRt) push(envRt);
-  push("/usr/share/openalpr/runtime_data");
-  push("/usr/local/share/openalpr/runtime_data");
-  push("./runtime_data");
-  push((fs::current_path()/ "runtime_data").string());
-  push((fs::current_path().parent_path()/ "runtime_data").string());
-
-  std::string chosen;
-  for (auto& c : candidates) {
-    fs::path p(c);
-    if (fs::exists(p) && fs::exists(p/"region")) {
-      chosen = c;
-      break;
-    }
+  RtResolve rr = resolveRuntimeValidated("br", "");
+  std::string chosen = rr.path;
+  if (rr.preferredInvalid) {
+    statusBarLabel_->setText(QString::fromStdString("config runtime invalid; trying fallbacks"));
   }
-  if (chosen.empty()) {
-    statusBarLabel_->setText("runtime_data not found");
+  if (!rr.ok) {
+    statusBarLabel_->setText("runtime_data not found/invalid");
     return;
   }
   runtimeEdit_->setText(QString::fromStdString(chosen));
@@ -474,6 +506,6 @@ void MainWindow::onAutoSetup() {
   bool ok = validatePaths(msg);
   testStatus_->setText(ok ? "OK" : msg);
   testStatus_->setStyleSheet(ok ? "color: green;" : "color: red;");
-  statusBarLabel_->setText(ok ? "runtime_data OK" : msg);
+  statusBarLabel_->setText(ok ? "runtime_data OK, cascade OK" : msg);
 }
 
