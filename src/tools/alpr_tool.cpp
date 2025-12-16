@@ -329,11 +329,17 @@ struct PreviewRuntimeOptions {
   std::string crossingMode="off"; // off|motion
   bool crossingRoiProvided=false;
   Rect crossingRoi;
+  bool alprRoiProvided=false;
+  Rect alprRoi;
   Point crossingP1;
   Point crossingP2;
   int motionThresh=25;
   int motionMinArea=1500;
   int crossingDebounce=3;
+  double motionMinRatio=0.01;
+  bool motionDirectionFilter=true;
+  int crossingArmMinFrames=10;
+  double crossingArmMinRatio=0.01;
   int logThrottleMs=400;
   int logPlatesEveryN=10;
   int maxTracks=32;
@@ -995,8 +1001,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       return Rect(x,y,w,h);
     };
     Rect crossingRoi = opts.crossingRoiProvided ? clampRect(opts.crossingRoi) : Rect(0,0,frame.cols, frame.rows);
+    Rect alprRoi = opts.alprRoiProvided ? clampRect(opts.alprRoi) : Rect(0,0,frame.cols, frame.rows);
     vector<AlprRegionOfInterest> rois;
-    if (roi.area() > 0) rois.push_back(AlprRegionOfInterest(roi.x, roi.y, roi.width, roi.height));
+    if (alprRoi.area() > 0) rois.push_back(AlprRegionOfInterest(alprRoi.x, alprRoi.y, alprRoi.width, alprRoi.height));
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
@@ -1027,35 +1034,69 @@ static void cmdPreview(const string& source, const string& confPath, const strin
           double a = contourArea(c);
           if (a > maxArea) { maxArea = a; best = c; }
         }
-        if (maxArea >= opts.motionMinArea && !best.empty()) {
+        int motionPixels = !thresh.empty() ? countNonZero(thresh) : 0;
+        double roiArea = static_cast<double>(r.area());
+        double motionRatio = (roiArea > 0) ? (motionPixels / roiArea) : 0.0;
+        if (maxArea >= opts.motionMinArea && !best.empty() && motionRatio >= opts.motionMinRatio) {
           motionDetected = true;
           Moments m = moments(best);
           if (m.m00 != 0) {
-            Point2f c(static_cast<float>(m.m10/m.m00) + r.x, static_cast<float>(m.m01/m.m00) + r.y);
-            Point2f p1(opts.crossingP1), p2(opts.crossingP2);
-            double cross = (p2.x - p1.x)*(c.y - p1.y) - (p2.y - p1.y)*(c.x - p1.x);
+            Point2f c(static_cast<float>(m.m10/m.m00), static_cast<float>(m.m01/m.m00));
+            Point2f cGlobal(c.x + r.x, c.y + r.y);
+            Point2f p1Local(static_cast<float>(opts.crossingP1.x - r.x), static_cast<float>(opts.crossingP1.y - r.y));
+            Point2f p2Local(static_cast<float>(opts.crossingP2.x - r.x), static_cast<float>(opts.crossingP2.y - r.y));
+            double cross = (p2Local.x - p1Local.x)*(c.y - p1Local.y) - (p2Local.y - p1Local.y)*(c.x - p1Local.x);
             if (cross > 0) currentSide = 1;
             else if (cross < 0) currentSide = -1;
+            bool dirOk = true;
+            static Point2f prevCentroid(0,0);
+            static bool hasPrev = false;
+            if (opts.motionDirectionFilter) {
+              if (hasPrev) {
+                double dx = cGlobal.x - prevCentroid.x;
+                double dy = cGlobal.y - prevCentroid.y;
+                double ldx = opts.crossingP2.x - opts.crossingP1.x;
+                double ldy = opts.crossingP2.y - opts.crossingP1.y;
+                double nx = -ldy;
+                double ny = ldx;
+                double projNormal = dx*nx + dy*ny;
+                double projLine = dx*ldx + dy*ldy;
+                dirOk = std::abs(projNormal) > std::abs(projLine);
+              }
+            }
+            prevCentroid = cGlobal;
+            hasPrev = true;
+
+            if (dirOk && motionRatio >= opts.crossingArmMinRatio) {
+              static int armCount = 0;
+              armCount++;
+              if (armCount >= opts.crossingArmMinFrames) {
+                if (motionDetected && currentSide != 0) {
+                  if (currentSide == sideStreakSide) sideStreakCount++;
+                  else { sideStreakSide = currentSide; sideStreakCount = 1; }
+                  if (lastStableSide == 0 && sideStreakCount >= opts.crossingDebounce) {
+                    lastStableSide = sideStreakSide;
+                  } else if (lastStableSide != 0 && sideStreakSide != lastStableSide && sideStreakCount >= opts.crossingDebounce) {
+                    crossingEvent = true;
+                    lastStableSide = sideStreakSide;
+                    if (crossingFrame < 0) {
+                      std::ostringstream coss;
+                      coss << "[crossing] frame=" << frameIdx
+                           << " ratio=" << motionRatio
+                           << " area=" << maxArea
+                           << " dir_ok=" << (dirOk ? 1 : 0);
+                      logLine(coss.str());
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
       gray.copyTo(prevGray);
-      if (motionDetected && currentSide != 0) {
-        if (currentSide == sideStreakSide) sideStreakCount++;
-        else { sideStreakSide = currentSide; sideStreakCount = 1; }
-        if (lastStableSide == 0 && sideStreakCount >= opts.crossingDebounce) {
-          lastStableSide = sideStreakSide;
-        } else if (lastStableSide != 0 && sideStreakSide != lastStableSide && sideStreakCount >= opts.crossingDebounce) {
-          crossingEvent = true;
-          lastStableSide = sideStreakSide;
-        }
-      } else {
-        sideStreakSide = 0;
-        sideStreakCount = 0;
-      }
       if (crossingEvent && crossingFrame < 0) {
         crossingFrame = frameIdx;
-        logLine(string("[crossing] frame=") + to_string(crossingFrame));
       }
       gatedByCrossing = opts.ocrOnlyAfterCrossing && crossingFrame < 0;
       ocrRan = !gatedByCrossing;
@@ -1444,16 +1485,28 @@ int main(int argc, char** argv) {
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
         if (a.rfind("--country",0)==0) { eatValue(countryArg); continue; }
         if (a.rfind("--crossing-mode",0)==0) { eatValue(opts.crossingMode); continue; }
-        if (a.rfind("--roi",0)==0) {
+        if (a.rfind("--crossing-roi",0)==0) {
           string v; eatValue(v);
           size_t p1=v.find(','); size_t p2=v.find(',', p1==string::npos?0:p1+1); size_t p3=v.find(',', p2==string::npos?0:p2+1);
-          if (p1==string::npos||p2==string::npos||p3==string::npos) throw std::runtime_error("Invalid --roi format, expected x,y,w,h");
+          if (p1==string::npos||p2==string::npos||p3==string::npos) throw std::runtime_error("Invalid --crossing-roi format, expected x,y,w,h");
           opts.crossingRoi.x = stoi(v.substr(0,p1));
           opts.crossingRoi.y = stoi(v.substr(p1+1,p2-p1-1));
           opts.crossingRoi.width = stoi(v.substr(p2+1,p3-p2-1));
           opts.crossingRoi.height = stoi(v.substr(p3+1));
-          if (opts.crossingRoi.width <=0 || opts.crossingRoi.height<=0) throw std::runtime_error("Invalid --roi dimensions");
+          if (opts.crossingRoi.width <=0 || opts.crossingRoi.height<=0) throw std::runtime_error("Invalid --crossing-roi dimensions");
           opts.crossingRoiProvided = true;
+          continue;
+        }
+        if (a.rfind("--alpr-roi",0)==0) {
+          string v; eatValue(v);
+          size_t p1=v.find(','); size_t p2=v.find(',', p1==string::npos?0:p1+1); size_t p3=v.find(',', p2==string::npos?0:p2+1);
+          if (p1==string::npos||p2==string::npos||p3==string::npos) throw std::runtime_error("Invalid --alpr-roi format, expected x,y,w,h");
+          opts.alprRoi.x = stoi(v.substr(0,p1));
+          opts.alprRoi.y = stoi(v.substr(p1+1,p2-p1-1));
+          opts.alprRoi.width = stoi(v.substr(p2+1,p3-p2-1));
+          opts.alprRoi.height = stoi(v.substr(p3+1));
+          if (opts.alprRoi.width <=0 || opts.alprRoi.height<=0) throw std::runtime_error("Invalid --alpr-roi dimensions");
+          opts.alprRoiProvided = true;
           continue;
         }
         if (a.rfind("--line",0)==0) {
@@ -1472,7 +1525,11 @@ int main(int argc, char** argv) {
         }
         if (a.rfind("--motion-thresh",0)==0) { string v; eatValue(v); opts.motionThresh = stoi(v); continue; }
         if (a.rfind("--motion-min-area",0)==0) { string v; eatValue(v); opts.motionMinArea = stoi(v); continue; }
+        if (a.rfind("--motion-min-ratio",0)==0) { string v; eatValue(v); opts.motionMinRatio = stod(v); continue; }
+        if (a.rfind("--motion-direction-filter",0)==0) { string v; eatValue(v); opts.motionDirectionFilter = (v!="0"&&v!="false"); continue; }
         if (a.rfind("--crossing-debounce",0)==0) { string v; eatValue(v); opts.crossingDebounce = std::max(1, stoi(v)); continue; }
+        if (a.rfind("--crossing-arm-min-frames",0)==0) { string v; eatValue(v); opts.crossingArmMinFrames = std::max(1, stoi(v)); continue; }
+        if (a.rfind("--crossing-arm-min-ratio",0)==0) { string v; eatValue(v); opts.crossingArmMinRatio = stod(v); continue; }
         if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
         if (a.rfind("--log-crossing-metrics",0)==0) { string v; eatValue(v); opts.logCrossingMetrics = (v=="1"||v=="true"); continue; }
         if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
@@ -1493,7 +1550,9 @@ int main(int argc, char** argv) {
                << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
                << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]"
                << " [--ocr-only-after-crossing 0|1] [--log-ocr-metrics 0|1]"
-               << " [--crossing-mode off|motion] [--roi x,y,w,h] [--line x1,y1,x2,y2] [--motion-thresh N] [--motion-min-area N] [--crossing-debounce N]"
+               << " [--crossing-mode off|motion] [--crossing-roi x,y,w,h] [--alpr-roi x,y,w,h] [--line x1,y1,x2,y2]"
+               << " [--motion-thresh N] [--motion-min-area N] [--motion-min-ratio R] [--motion-direction-filter 0|1]"
+               << " [--crossing-debounce N] [--crossing-arm-min-frames N] [--crossing-arm-min-ratio R]"
                << " [--log-crossing-metrics 0|1]\n";
           return 0;
         }
