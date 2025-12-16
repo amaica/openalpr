@@ -159,13 +159,17 @@ namespace alpr
     auto buildPasses = [&](const cv::Mat& base, std::vector<std::pair<cv::Mat,double>>& out){
       out.clear();
       out.push_back(std::make_pair(base, 1.0));
-      bool isMoto = (config->profile == "moto");
-      bool isGaragem = (config->profile == "garagem");
-      if (isMoto || isGaragem) {
+      bool isMoto = (config->vehicle == "moto");
+      bool isGaragem = (config->scenario == "garagem");
+      bool applyUpsample = config->motoUpsample || isMoto || isGaragem;
+      double upScale = (config->motoUpsampleScale > 0.0) ? config->motoUpsampleScale : 2.0;
+      if (applyUpsample && upScale != 1.0) {
         cv::Mat up;
-        cv::resize(base, up, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
-        out.push_back(std::make_pair(up, 2.0));
+        cv::resize(base, up, cv::Size(), upScale, upScale, cv::INTER_CUBIC);
+        out.push_back(std::make_pair(up, upScale));
+      }
 
+      if (isMoto || isGaragem) {
         cv::Mat claheImg;
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8,8));
         clahe->apply(base, claheImg);
