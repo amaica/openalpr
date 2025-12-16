@@ -45,46 +45,9 @@ namespace alpr
 
   Detector* createDetector(Config* config, PreWarp* prewarp)
   {
-    // auto mode: prefer yolo if model path set, else classic
-    if (config->detectorType == "auto")
-    {
-      if (config->yoloModelPath.length() > 0)
-      {
-        Detector* classicFallback = NULL;
-        if (config->detectorFallbackClassic)
-          classicFallback = createClassicDetector(config, prewarp);
-
-        Detector* yolo = new YoloPlateDetector(config, prewarp, classicFallback);
-        if (yolo != NULL)
-          return yolo;
-        if (config->debugDetector)
-          std::cout << "[detector] auto mode: YOLO init failed, using classic" << std::endl;
-        return classicFallback != NULL ? classicFallback : createClassicDetector(config, prewarp);
-      }
-      if (config->debugDetector)
-        std::cout << "[detector] auto mode: no YOLO model, using classic" << std::endl;
-      return createClassicDetector(config, prewarp);
-    }
-
-    if (config->detectorType == "yolo")
-    {
-      Detector* classicFallback = NULL;
-      if (config->detectorFallbackClassic)
-        classicFallback = createClassicDetector(config, prewarp);
-
-      if (config->yoloModelPath.length() == 0)
-      {
-        std::cerr << "YOLO detector selected but yolo_model_path is empty. Falling back to classic." << std::endl;
-        if (classicFallback != NULL)
-          return classicFallback;
-      }
-      if (config->debugDetector)
-        std::cout << "Using YOLO detector" << std::endl;
-      return new YoloPlateDetector(config, prewarp, classicFallback);
-    }
-
+    // Classic detectors only; YOLO/ORT removed
     if (config->debugDetector)
-      std::cout << "Using classic detector" << std::endl;
+      std::cout << "[detector] using classic detector" << std::endl;
     return createClassicDetector(config, prewarp);
   }
 

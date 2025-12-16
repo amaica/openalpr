@@ -170,22 +170,15 @@ Esses valores são lidos na inicialização e registrados em nível de debug. Ne
   # Texto: artifacts/reports/plate_accuracy_report.txt
   ```
 
-#### ONNX Runtime (YOLO opcional, vendorizado)
-- Baixar binários oficiais (CPU) para `third_party/onnxruntime/`:
-  ```bash
-  ./scripts/fetch_onnxruntime.sh   # usa v1.17.3 por padrão
+#### Detecção padrão e skip detection (opcional)
+- Por padrão, a biblioteca usa o detector clássico integrado (nenhum backend externo).
+- A chave `skip_detection` no `openalpr.conf` é **0** por padrão (detecção habilitada).
+- Para cenários onde as bounding boxes são fornecidas externamente, você pode ativar:
+  ```ini
+  skip_detection = 1
   ```
-- Build com backend ORT ativado:
-  ```bash
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ORT_YOLO=ON
-  cmake --build build -j$(nproc)
-  ```
-- Se o runtime não for encontrado, o CMake avisa para rodar o script ou desabilitar com `-DENABLE_ORT_YOLO=OFF`.
-- Logs de detecção (preview):
-  - `[yolo][ort] ... load_ok=1`
-  - `[detector] using=ort_yolo`
-  - `yolo_bbox=x,y,w,h`
-  - Arquivo sugerido: `artifacts/logs/preview_ort_yolo.log`
+  e passar ROIs pela API para que apenas OCR/pipeline rodem sobre as regiões fornecidas (sem detector interno).
+  Use apenas quando sua aplicação já fornece bboxes confiáveis.
 
 ## Testes (bateria automatizada)
 ```bash
