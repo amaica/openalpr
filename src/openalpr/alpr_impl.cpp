@@ -889,6 +889,26 @@ namespace alpr
       cJSON_AddNumberToObject(candidate_object, "confidence",  result->topNPlates[i].overall_confidence);
       cJSON_AddNumberToObject(candidate_object, "matches_template",  result->topNPlates[i].matches_template);
 
+      cJSON *charsArr = cJSON_CreateArray();
+      for (size_t cd = 0; cd < result->topNPlates[i].character_details.size(); cd++)
+      {
+        const AlprChar& ch = result->topNPlates[i].character_details[cd];
+        cJSON *chObj = cJSON_CreateObject();
+        cJSON_AddStringToObject(chObj, "char", ch.character.c_str());
+        cJSON_AddNumberToObject(chObj, "confidence", ch.confidence);
+        cJSON *ptsArr = cJSON_CreateArray();
+        for (int cpt = 0; cpt < 4; cpt++)
+        {
+          cJSON *pt = cJSON_CreateObject();
+          cJSON_AddNumberToObject(pt, "x", ch.corners[cpt].x);
+          cJSON_AddNumberToObject(pt, "y", ch.corners[cpt].y);
+          cJSON_AddItemToArray(ptsArr, pt);
+        }
+        cJSON_AddItemToObject(chObj, "points", ptsArr);
+        cJSON_AddItemToArray(charsArr, chObj);
+      }
+      cJSON_AddItemToObject(candidate_object, "char_details", charsArr);
+
       cJSON_AddItemToArray(candidates, candidate_object);
     }
 
