@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <set>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <regex>
+#include <deque>
 #include "openalpr/alpr.h"
 #include "openalpr/config.h"
 #include <opencv2/objdetect/objdetect.hpp>
@@ -353,6 +355,8 @@ struct PreviewRuntimeOptions {
   bool gateAfterCrossing=false;
   std::string reportJsonPath;
   double crossingLinePct=50.0; // percent of frame/ROI height
+  std::string profile="default";
+  int ocrBurstFrames=1;
 };
 
 struct RuntimeResolveResult {
@@ -1109,6 +1113,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     cerr << "Invalid --crossing-mode (expected off|motion)\n";
     return;
   }
+  if (opts.ocrBurstFrames <= 0) opts.ocrBurstFrames = 1;
   RuntimeResolveResult rt = resolveRuntimeData(country, runtimePreferred);
   if (rt.preferredInvalid) {
     cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
@@ -1205,6 +1210,23 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   int platesNone = 0;
   int platesFoundPostCrossing = 0;
   int platesNonePostCrossing = 0;
+  int votesEmitted = 0;
+  std::set<std::string> finalVotes;
+  std::deque<std::string> burstWindow;
+  std::string lastVote;
+  auto computeMajority = [](const std::deque<std::string>& win)->std::string{
+    std::map<std::string,int> counts;
+    for (const auto& s : win) {
+      if (s.empty() || s == "<none>") continue;
+      counts[s]++;
+    }
+    int best = 0;
+    std::string bestStr;
+    for (const auto& kv : counts) {
+      if (kv.second > best) { best = kv.second; bestStr = kv.first; }
+    }
+    return best > 0 ? bestStr : std::string();
+  };
   bool crossingEnabled = (opts.crossingMode == "motion");
   if (crossingEnabled && (opts.crossingP1 == opts.crossingP2)) {
     cerr << "crossing-mode=motion requires --line x1,y1,x2,y2\n";
@@ -1394,9 +1416,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     }
     bool anyDetections = !results.plates.empty();
     bool plateFoundThisFrame = false;
+    std::string framePlateText;
     if (!results.plates.empty()) {
       for (const auto& plate : results.plates) {
-        if (!plate.bestPlate.characters.empty()) { plateFoundThisFrame = true; break; }
+        if (!plate.bestPlate.characters.empty()) {
+          plateFoundThisFrame = true;
+          if (framePlateText.empty()) framePlateText = plate.bestPlate.characters;
+        }
       }
     }
     bool crossedNow = crossingEvent;
@@ -1568,6 +1594,22 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       }
       logLine(m.str());
     }
+    bool burstActive = (opts.ocrBurstFrames > 1) && allowAlpr && (!opts.ocrOnlyAfterCrossing || isPostCrossing);
+    if (burstActive) {
+      burstWindow.push_back(framePlateText.empty() ? std::string("<none>") : framePlateText);
+      while (static_cast<int>(burstWindow.size()) > opts.ocrBurstFrames) burstWindow.pop_front();
+      if (static_cast<int>(burstWindow.size()) == opts.ocrBurstFrames) {
+        std::string vote = computeMajority(burstWindow);
+        if (!vote.empty() && vote != lastVote) {
+          lastVote = vote;
+          votesEmitted++;
+          finalVotes.insert(vote);
+          std::ostringstream v;
+          v << "[vote] profile=" << opts.profile << " plate=" << vote << " window=" << opts.ocrBurstFrames;
+          logLine(v.str());
+        }
+      }
+    }
 
     if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
     if (speedCfg.enabled) {
@@ -1620,6 +1662,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
+  cout << "profile=" << opts.profile << "\n";
+  cout << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
+  cout << "votes_emitted=" << votesEmitted << "\n";
+  cout << "final_plate_count=" << finalVotes.size() << "\n";
 
   if (!opts.reportJsonPath.empty()) {
     ensureParentDir(opts.reportJsonPath);
@@ -1634,7 +1680,11 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       js << "  \"alpr_calls_pre_crossing\": " << alprCallsPreCrossing << ",\n";
       js << "  \"alpr_calls_post_crossing\": " << alprCallsPostCrossing << ",\n";
       js << "  \"plates_found_post_crossing\": " << platesFoundPostCrossing << ",\n";
-      js << "  \"frames_after_crossing\": " << framesAfterCrossing << "\n";
+      js << "  \"frames_after_crossing\": " << framesAfterCrossing << ",\n";
+      js << "  \"profile\": \"" << opts.profile << "\",\n";
+      js << "  \"ocr_burst_frames\": " << opts.ocrBurstFrames << ",\n";
+      js << "  \"votes_emitted\": " << votesEmitted << ",\n";
+      js << "  \"final_plate_count\": " << finalVotes.size() << "\n";
       js << "}\n";
     }
     bool pass = (rt.path != runtimePreferred) &&
@@ -1881,6 +1931,8 @@ int main(int argc, char** argv) {
       PreviewRuntimeOptions opts;
       string countryArg;
       bool previewDoctor=false;
+      opts.profile = "default";
+      opts.ocrBurstFrames = 1;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -1955,6 +2007,15 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
+        if (a.rfind("--profile",0)==0) {
+          string v; eatValue(v);
+          std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+          if (v == "default") { opts.profile = "default"; opts.ocrBurstFrames = 1; }
+          else if (v == "moto") { opts.profile = "moto"; opts.ocrBurstFrames = 6; }
+          else if (v == "garagem") { opts.profile = "garagem"; opts.ocrBurstFrames = 10; }
+          else throw std::runtime_error("Invalid --profile (expected default|moto|garagem)");
+          continue;
+        }
         if (a=="-h"||a=="--help") {
           cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest]"
                << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
@@ -1963,6 +2024,7 @@ int main(int argc, char** argv) {
                << " [--crossing-mode off|motion] [--crossing-roi x,y,w,h] [--alpr-roi x,y,w,h] [--line x1,y1,x2,y2]"
                << " [--motion-thresh N] [--motion-min-area N] [--motion-min-ratio R] [--motion-direction-filter 0|1]"
                << " [--crossing-debounce N] [--crossing-arm-min-frames N] [--crossing-arm-min-ratio R]"
+               << " [--profile default|moto|garagem]"
                << " [--log-crossing-metrics 0|1]\n";
           return 0;
         }
