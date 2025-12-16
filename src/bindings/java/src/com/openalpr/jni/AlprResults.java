@@ -31,7 +31,7 @@ public class AlprResults {
         for (int i = 0; i < resultsArray.length(); i++)
         {
             JSONObject plateObj = (JSONObject) resultsArray.get(i);
-            AlprPlateResult result = new AlprPlateResult(plateObj);
+            AlprPlateResult result = new AlprPlateResult(plateObj, img_width, img_height);
             plates.add(result);
         }
 
