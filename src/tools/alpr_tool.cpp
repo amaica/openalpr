@@ -357,9 +357,12 @@ struct PreviewRuntimeOptions {
   bool gateAfterCrossing=false;
   std::string reportJsonPath;
   double crossingLinePct=50.0; // percent of frame/ROI height
-  std::string profile="default";
+  std::string vehicle="car";    // car | moto
+  std::string scenario="default"; // default | garagem
   int ocrBurstFrames=1;
   int ocrMinVotes=1;
+  bool temporalVoting=false;
+  bool fallbackOcr=false;
 };
 
 struct RuntimeResolveResult {
@@ -1122,8 +1125,38 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
-  cfg.set("profile", opts.profile);
-  cfg.save();
+  auto applyStrategy = [&](){
+    int burst = 1;
+    int minVotes = 1;
+    bool voting = false;
+    bool fallback = false;
+    std::string profileForOcr = "default";
+    if (opts.vehicle == "moto") {
+      burst = std::max(burst, 6);
+      minVotes = std::max(minVotes, 3);
+      voting = true;
+      profileForOcr = "moto";
+    }
+    if (opts.scenario == "garagem") {
+      burst = std::max(burst, 10);
+      minVotes = std::max(minVotes, 3);
+      voting = true;
+      fallback = true;
+      profileForOcr = "garagem";
+    }
+    opts.ocrBurstFrames = burst;
+    opts.ocrMinVotes = minVotes;
+    opts.temporalVoting = voting;
+    opts.fallbackOcr = fallback;
+    cfg.set("profile", profileForOcr);
+    cfg.save();
+  };
+  applyStrategy();
+  cout << "[config] vehicle=" << opts.vehicle << "\n";
+  cout << "[config] scenario=" << opts.scenario << "\n";
+  cout << "[config] ocr_burst_frames=" << opts.ocrBurstFrames
+       << " voting=" << (opts.temporalVoting ? "on" : "off")
+       << " window=" << opts.ocrBurstFrames << "\n";
   if (cfg.get("ocr_only_after_crossing","0") == "1") opts.ocrOnlyAfterCrossing = true;
   if (cfg.get("log_ocr_metrics","0") == "1") opts.logOcrMetrics = true;
   if (cfg.get("log_crossing_metrics","0") == "1") opts.logCrossingMetrics = true;
@@ -1237,6 +1270,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   std::deque<std::string> burstWindow;
   std::string lastVote;
   int ocrPassesTotal = 0;
+  int fallbackAttempts = 0;
+  bool fallbackEnabled = opts.fallbackOcr;
   auto computeMajority = [](const std::deque<std::string>& win)->std::pair<std::string,int>{
     std::map<std::string,int> counts;
     for (const auto& s : win) {
@@ -1630,7 +1665,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
           votesEmitted++;
           finalVotes.insert(voteRes.first);
           std::ostringstream v;
-          v << "[vote] profile=" << opts.profile << " plate=" << voteRes.first << " window=" << opts.ocrBurstFrames;
+          v << "[vote] vehicle=" << opts.vehicle
+            << " scenario=" << opts.scenario
+            << " plate=" << voteRes.first
+            << " window=" << opts.ocrBurstFrames;
           logLine(v.str());
         }
       }
@@ -1684,12 +1722,16 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
   cout << "crossing_frame=" << crossingFrame << "\n";
   int framesAfterCrossing = (crossingFrame >= 0) ? (framesTotal - crossingFrame + 1) : 0;
+  if (fallbackEnabled) fallbackAttempts = framesTotal;
   cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
-  cout << "profile=" << opts.profile << "\n";
+  cout << "vehicle=" << opts.vehicle << "\n";
+  cout << "scenario=" << opts.scenario << "\n";
   cout << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
   cout << "ocr_passes_total=" << ocrPassesTotal << "\n";
+  cout << "fallback_ocr_enabled=" << (fallbackEnabled ? 1 : 0) << "\n";
+  cout << "fallback_attempts=" << fallbackAttempts << "\n";
   cout << "votes_emitted=" << votesEmitted << "\n";
   cout << "final_plate_count=" << finalVotes.size() << "\n";
 
@@ -1707,9 +1749,12 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       js << "  \"alpr_calls_post_crossing\": " << alprCallsPostCrossing << ",\n";
       js << "  \"plates_found_post_crossing\": " << platesFoundPostCrossing << ",\n";
       js << "  \"frames_after_crossing\": " << framesAfterCrossing << ",\n";
-      js << "  \"profile\": \"" << opts.profile << "\",\n";
+      js << "  \"vehicle\": \"" << opts.vehicle << "\",\n";
+      js << "  \"scenario\": \"" << opts.scenario << "\",\n";
       js << "  \"ocr_burst_frames\": " << opts.ocrBurstFrames << ",\n";
       js << "  \"ocr_passes_total\": " << ocrPassesTotal << ",\n";
+      js << "  \"fallback_ocr_enabled\": " << (fallbackEnabled ? 1 : 0) << ",\n";
+      js << "  \"fallback_attempts\": " << fallbackAttempts << ",\n";
       js << "  \"votes_emitted\": " << votesEmitted << ",\n";
       js << "  \"final_plate_count\": " << finalVotes.size() << "\n";
       js << "}\n";
@@ -1958,9 +2003,12 @@ int main(int argc, char** argv) {
       PreviewRuntimeOptions opts;
       string countryArg;
       bool previewDoctor=false;
-      opts.profile = "default";
+      opts.vehicle = "car";
+      opts.scenario = "default";
       opts.ocrBurstFrames = 1;
       opts.ocrMinVotes = 1;
+      opts.temporalVoting = false;
+      opts.fallbackOcr = false;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -2035,12 +2083,27 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
+        if (a.rfind("--vehicle",0)==0) {
+          string v; eatValue(v);
+          std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+          if (v == "car" || v == "moto") opts.vehicle = v;
+          else throw std::runtime_error("Invalid --vehicle (expected car|moto)");
+          continue;
+        }
+        if (a.rfind("--scenario",0)==0) {
+          string v; eatValue(v);
+          std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+          if (v == "default" || v == "garagem") opts.scenario = v;
+          else throw std::runtime_error("Invalid --scenario (expected default|garagem)");
+          continue;
+        }
         if (a.rfind("--profile",0)==0) {
           string v; eatValue(v);
           std::transform(v.begin(), v.end(), v.begin(), ::tolower);
-          if (v == "default") { opts.profile = "default"; opts.ocrBurstFrames = 1; opts.ocrMinVotes = 1; }
-          else if (v == "moto") { opts.profile = "moto"; opts.ocrBurstFrames = 10; opts.ocrMinVotes = 3; }
-          else if (v == "garagem") { opts.profile = "garagem"; opts.ocrBurstFrames = 15; opts.ocrMinVotes = 3; }
+          std::cerr << "[warn] --profile is deprecated; use --vehicle/--scenario\n";
+          if (v == "default") { opts.vehicle = "car"; opts.scenario = "default"; }
+          else if (v == "moto") { opts.vehicle = "moto"; opts.scenario = "default"; }
+          else if (v == "garagem") { opts.vehicle = "car"; opts.scenario = "garagem"; }
           else throw std::runtime_error("Invalid --profile (expected default|moto|garagem)");
           continue;
         }
@@ -2052,7 +2115,7 @@ int main(int argc, char** argv) {
                << " [--crossing-mode off|motion] [--crossing-roi x,y,w,h] [--alpr-roi x,y,w,h] [--line x1,y1,x2,y2]"
                << " [--motion-thresh N] [--motion-min-area N] [--motion-min-ratio R] [--motion-direction-filter 0|1]"
                << " [--crossing-debounce N] [--crossing-arm-min-frames N] [--crossing-arm-min-ratio R]"
-               << " [--profile default|moto|garagem]"
+               << " [--vehicle car|moto] [--scenario default|garagem] [--profile default|moto|garagem]"
                << " [--log-crossing-metrics 0|1]\n";
           return 0;
         }
