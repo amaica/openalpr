@@ -111,6 +111,7 @@ namespace alpr
     public:
       AlprResults() {
         frame_number = -1;
+        ocr_passes_total = 0;
       };
       virtual ~AlprResults() {};
 
@@ -119,6 +120,8 @@ namespace alpr
       int img_width;
       int img_height;
       float total_processing_time_ms;
+      std::string profile;
+      int ocr_passes_total;
 
       std::vector<AlprPlateResult> plates;
 

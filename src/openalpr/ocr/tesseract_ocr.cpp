@@ -21,6 +21,7 @@
 #include "config.h"
 
 #include "segmentation/charactersegmenter.h"
+#include <numeric>
 
 using namespace std;
 using namespace cv;
@@ -62,22 +63,24 @@ namespace alpr
 
     const int SPACE_CHAR_CODE = 32;
     
-    std::vector<OcrChar> recognized_chars;
+    std::vector<OcrChar> best_chars;
+    double best_score = -1.0;
     
-    for (unsigned int i = 0; i < pipeline_data->thresholds.size(); i++)
-    {
-      // Make it black text on white background
-      bitwise_not(pipeline_data->thresholds[i], pipeline_data->thresholds[i]);
-      tesseract.SetImage((uchar*) pipeline_data->thresholds[i].data, 
-                          pipeline_data->thresholds[i].size().width, pipeline_data->thresholds[i].size().height, 
-                          pipeline_data->thresholds[i].channels(), pipeline_data->thresholds[i].step1());
-
- 
+    auto runPass = [&](const cv::Mat& src, double scale, int passIndex, int threshIndex)->std::pair<std::vector<OcrChar>, double> {
+      cv::Mat working;
+      src.copyTo(working);
+      bitwise_not(working, working);
+      tesseract.SetImage((uchar*) working.data,
+                          working.size().width, working.size().height,
+                          working.channels(), working.step1());
+      std::vector<OcrChar> chars;
       int absolute_charpos = 0;
-
       for (unsigned int j = 0; j < pipeline_data->charRegions[line_idx].size(); j++)
       {
-        Rect expandedRegion = expandRect( pipeline_data->charRegions[line_idx][j], 2, 2, pipeline_data->thresholds[i].cols, pipeline_data->thresholds[i].rows) ;
+        cv::Rect base = pipeline_data->charRegions[line_idx][j];
+        cv::Rect scaledRect(cvRound(base.x * scale), cvRound(base.y * scale),
+                            cvRound(base.width * scale), cvRound(base.height * scale));
+        Rect expandedRegion = expandRect(scaledRect, 2, 2, working.cols, working.rows);
 
         tesseract.SetRectangle(expandedRegion.x, expandedRegion.y, expandedRegion.width, expandedRegion.height);
         tesseract.Recognize(NULL);
@@ -96,17 +99,16 @@ namespace alpr
           int pointsize = 0;
           const char* fontName = ri->WordFontAttributes(&dontcare, &dontcare, &dontcare, &dontcare, &dontcare, &dontcare, &pointsize, &fontindex);
 
-          // Ignore NULL pointers, spaces, and characters that are way too small to be valid
           if(symbol != 0 && symbol[0] != SPACE_CHAR_CODE && pointsize >= config->ocrMinFontSize)
           {
             OcrChar c;
             c.char_index = absolute_charpos;
             c.confidence = conf;
             c.letter = string(symbol);
-            recognized_chars.push_back(c);
+            chars.push_back(c);
 
             if (this->config->debugOcr)
-              printf("charpos%d line%d: threshold %d:  symbol %s, conf: %f font: %s (index %d) size %dpx", absolute_charpos, line_idx, i, symbol, conf, fontName, fontindex, pointsize);
+              printf("charpos%d line%d: pass %d (thresh %d) symbol %s, conf: %f font: %s (index %d) size %dpx", absolute_charpos, line_idx, passIndex, threshIndex, symbol, conf, fontName, fontindex, pointsize);
 
             bool indent = false;
             tesseract::ChoiceIterator ci(*ri);
@@ -119,15 +121,11 @@ namespace alpr
               c2.confidence = ci.Confidence();
               c2.letter = string(choice);
               
-              //1/17/2016 adt adding check to avoid double adding same character if ci is same as symbol. Otherwise first choice from ResultsIterator will get added twice when choiceIterator run.
               if (string(symbol) != string(choice))
-                recognized_chars.push_back(c2);
+                chars.push_back(c2);
               else
               {
-                // Explictly double-adding the first character.  This leads to higher accuracy right now, likely because other sections of code
-                // have expected it and compensated. 
-                // TODO: Figure out how to remove this double-counting of the first letter without impacting accuracy
-                recognized_chars.push_back(c2);
+                chars.push_back(c2);
               }
               if (this->config->debugOcr)
               {
@@ -153,10 +151,55 @@ namespace alpr
 
         absolute_charpos++;
       }
-      
+      double score = 0.0;
+      for (const auto& c : chars) score += c.confidence;
+      return std::make_pair(chars, score);
+    };
+
+    auto buildPasses = [&](const cv::Mat& base, std::vector<std::pair<cv::Mat,double>>& out){
+      out.clear();
+      out.push_back(std::make_pair(base, 1.0));
+      bool isMoto = (config->profile == "moto");
+      bool isGaragem = (config->profile == "garagem");
+      if (isMoto || isGaragem) {
+        cv::Mat up;
+        cv::resize(base, up, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
+        out.push_back(std::make_pair(up, 2.0));
+
+        cv::Mat claheImg;
+        cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8,8));
+        clahe->apply(base, claheImg);
+        cv::Mat adapt;
+        cv::adaptiveThreshold(claheImg, adapt, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 15, 5);
+        out.push_back(std::make_pair(adapt, 1.0));
+
+        if (isGaragem) {
+          cv::Mat blurred;
+          cv::GaussianBlur(base, blurred, cv::Size(3,3), 0);
+          cv::Mat sharpened;
+          cv::addWeighted(base, 1.5, blurred, -0.5, 0, sharpened);
+          cv::Mat adapt2;
+          cv::adaptiveThreshold(sharpened, adapt2, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY, 17, 7);
+          out.push_back(std::make_pair(adapt2, 1.0));
+        }
+      }
+    };
+
+    for (unsigned int i = 0; i < pipeline_data->thresholds.size(); i++)
+    {
+      std::vector<std::pair<cv::Mat,double>> passes;
+      buildPasses(pipeline_data->thresholds[i], passes);
+      for (size_t p = 0; p < passes.size(); ++p) {
+        pipeline_data->ocr_passes_total++;
+        auto res = runPass(passes[p].first, passes[p].second, static_cast<int>(p), static_cast<int>(i));
+        if (res.second > best_score) {
+          best_score = res.second;
+          best_chars = res.first;
+        }
+      }
     }
     
-    return recognized_chars;
+    return best_chars;
   }
   void TesseractOcr::segment(PipelineData* pipeline_data) {
 
