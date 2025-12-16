@@ -323,6 +323,17 @@ struct Track {
 struct PreviewRuntimeOptions {
   bool logPlates=false;
   bool logEvents=true;
+  bool logOcrMetrics=false;
+  bool ocrOnlyAfterCrossing=false;
+  bool logCrossingMetrics=false;
+  std::string crossingMode="off"; // off|motion
+  bool crossingRoiProvided=false;
+  Rect crossingRoi;
+  Point crossingP1;
+  Point crossingP2;
+  int motionThresh=25;
+  int motionMinArea=1500;
+  int crossingDebounce=3;
   int logThrottleMs=400;
   int logPlatesEveryN=10;
   int maxTracks=32;
@@ -869,7 +880,7 @@ static bool isValidOldBr(const string& plate) {
   return std::regex_match(plate, old);
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, const PreviewRuntimeOptions& opts, const string& countryArg) {
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, PreviewRuntimeOptions opts, const string& countryArg) {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
@@ -885,6 +896,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
+  if (cfg.get("ocr_only_after_crossing","0") == "1") opts.ocrOnlyAfterCrossing = true;
+  if (cfg.get("log_ocr_metrics","0") == "1") opts.logOcrMetrics = true;
+  if (cfg.get("log_crossing_metrics","0") == "1") opts.logCrossingMetrics = true;
+  if (opts.crossingMode != "off" && opts.crossingMode != "motion") {
+    cerr << "Invalid --crossing-mode (expected off|motion)\n";
+    return;
+  }
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
@@ -940,8 +958,22 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   double startWall = wallSeconds();
   auto wallClockStart = std::chrono::system_clock::now();
   int framesTotal = 0;
+  int ocrCallsTotal = 0;
+  int ocrCallsPostCrossing = 0;
   int platesFound = 0;
   int platesNone = 0;
+  int platesFoundPostCrossing = 0;
+  int platesNonePostCrossing = 0;
+  bool crossingEnabled = (opts.crossingMode == "motion");
+  if (crossingEnabled && (opts.crossingP1 == opts.crossingP2)) {
+    cerr << "crossing-mode=motion requires --line x1,y1,x2,y2\n";
+    return;
+  }
+  Mat prevGray;
+  int lastStableSide = 0;
+  int sideStreakSide = 0;
+  int sideStreakCount = 0;
+  bool crossingReached = false;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
@@ -955,6 +987,14 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       roi = roiFromConfig(cfg, frame);
       if (roi.area() == 0) { roi = defaultRoi(frame); defaultUsed=true; }
     }
+    auto clampRect = [&](Rect r)->Rect{
+      int x = std::max(0, std::min(r.x, frame.cols-1));
+      int y = std::max(0, std::min(r.y, frame.rows-1));
+      int w = std::min(frame.cols - x, std::max(0, r.width));
+      int h = std::min(frame.rows - y, std::max(0, r.height));
+      return Rect(x,y,w,h);
+    };
+    Rect crossingRoi = opts.crossingRoiProvided ? clampRect(opts.crossingRoi) : Rect(0,0,frame.cols, frame.rows);
     vector<AlprRegionOfInterest> rois;
     if (roi.area() > 0) rois.push_back(AlprRegionOfInterest(roi.x, roi.y, roi.width, roi.height));
     Mat bgr;
@@ -963,10 +1003,69 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     double lineA = (roi.area() > 0 ? roi.y + speedCfg.yA * roi.height : speedCfg.yA * frame.rows);
     double lineB = (roi.area() > 0 ? roi.y + speedCfg.yB * roi.height : speedCfg.yB * frame.rows);
 
+    bool motionDetected = false;
+    bool crossingEvent = false;
+    int currentSide = 0;
+    bool gatedByCrossing = opts.ocrOnlyAfterCrossing && !crossingReached;
+    bool ocrRan = !gatedByCrossing;
+    if (crossingEnabled) {
+      Mat gray;
+      cvtColor(frame, gray, COLOR_BGR2GRAY);
+      GaussianBlur(gray, gray, Size(5,5), 0);
+      Rect r = clampRect(crossingRoi);
+      if (r.area() > 0) gray = gray(r);
+      if (!prevGray.empty()) {
+        Mat diff, thresh;
+        absdiff(gray, prevGray, diff);
+        threshold(diff, thresh, opts.motionThresh, 255, THRESH_BINARY);
+        dilate(thresh, thresh, Mat(), Point(-1,-1), 2);
+        vector<vector<Point>> contours;
+        findContours(thresh, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        double maxArea = 0.0;
+        vector<Point> best;
+        for (const auto& c : contours) {
+          double a = contourArea(c);
+          if (a > maxArea) { maxArea = a; best = c; }
+        }
+        if (maxArea >= opts.motionMinArea && !best.empty()) {
+          motionDetected = true;
+          Moments m = moments(best);
+          if (m.m00 != 0) {
+            Point2f c(static_cast<float>(m.m10/m.m00) + r.x, static_cast<float>(m.m01/m.m00) + r.y);
+            Point2f p1(opts.crossingP1), p2(opts.crossingP2);
+            double cross = (p2.x - p1.x)*(c.y - p1.y) - (p2.y - p1.y)*(c.x - p1.x);
+            if (cross > 0) currentSide = 1;
+            else if (cross < 0) currentSide = -1;
+          }
+        }
+      }
+      gray.copyTo(prevGray);
+      if (motionDetected && currentSide != 0) {
+        if (currentSide == sideStreakSide) sideStreakCount++;
+        else { sideStreakSide = currentSide; sideStreakCount = 1; }
+        if (lastStableSide == 0 && sideStreakCount >= opts.crossingDebounce) {
+          lastStableSide = sideStreakSide;
+        } else if (lastStableSide != 0 && sideStreakSide != lastStableSide && sideStreakCount >= opts.crossingDebounce) {
+          crossingReached = true;
+          crossingEvent = true;
+          lastStableSide = sideStreakSide;
+        }
+      } else {
+        sideStreakSide = 0;
+        sideStreakCount = 0;
+      }
+      gatedByCrossing = opts.ocrOnlyAfterCrossing && !crossingReached;
+      ocrRan = !gatedByCrossing;
+    }
+
     AlprResults results;
     if (opts.maxSeconds > 0 && (wallSeconds() - startWall) >= opts.maxSeconds) break;
 
-    if (selfTest) {
+    if (!ocrRan) {
+      results.total_processing_time_ms = 0;
+      results.img_width = frame.cols;
+      results.img_height = frame.rows;
+    } else if (selfTest) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
       results.img_height = frame.rows;
@@ -1004,6 +1103,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       }
     }
 
+    if (ocrRan) {
+      ocrCallsTotal++;
+    }
     bool anyDetections = !results.plates.empty();
     bool plateFoundThisFrame = false;
     if (!results.plates.empty()) {
@@ -1011,7 +1113,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         if (!plate.bestPlate.characters.empty()) { plateFoundThisFrame = true; break; }
       }
     }
-    if (plateFoundThisFrame) platesFound++; else platesNone++;
+    bool crossedNow = crossingEvent;
+    if (ocrRan) {
+      if (plateFoundThisFrame) platesFound++; else platesNone++;
+    }
     if (trackingActive) {
       for (const auto& plate : results.plates) {
         Rect pr = plateRect(plate);
@@ -1130,6 +1235,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
               }
             }
           }
+          if (tr.crossedA || tr.fired) crossedNow = true;
         }
       }
 
@@ -1152,6 +1258,29 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       }
     } else {
       drawResults(frame, results);
+    }
+
+    bool crossedFrame = crossingReached || crossedNow;
+    if (ocrRan) {
+      if (crossedFrame) {
+        ocrCallsPostCrossing++;
+        if (plateFoundThisFrame) platesFoundPostCrossing++; else platesNonePostCrossing++;
+      }
+    }
+    if (opts.logOcrMetrics || opts.logCrossingMetrics) {
+      std::ostringstream m;
+      std::string plateText = (ocrRan && plateFoundThisFrame && !results.plates.empty()) ? results.plates.front().bestPlate.characters : std::string("<none>");
+      std::string reason = plateFoundThisFrame ? "ok" : (gatedByCrossing ? "gated_by_crossing" : "no_candidates");
+      m << "frame=" << frameIdx
+        << " crossed=" << (crossedFrame ? 1 : 0)
+        << " ocr_ran=" << (ocrRan ? 1 : 0)
+        << " gated_by_crossing=" << (gatedByCrossing ? 1 : 0)
+        << " motion=" << (crossingEvent || motionDetected ? 1 : 0);
+      if (opts.logOcrMetrics) {
+        m << " plate=" << plateText
+          << " reason=" << reason;
+      }
+      logLine(m.str());
     }
 
     if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
@@ -1192,8 +1321,12 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   double fpsReport = (wallTimeSeconds > 0.0) ? (framesTotal / wallTimeSeconds) : 0.0;
   cout << "[report]\n";
   cout << "frames=" << framesTotal << "\n";
+  cout << "ocr_calls=" << ocrCallsTotal << "\n";
+  cout << "ocr_calls_post_crossing=" << ocrCallsPostCrossing << "\n";
   cout << "plates_found=" << platesFound << "\n";
   cout << "plates_none=" << platesNone << "\n";
+  cout << "plates_found_post_crossing=" << platesFoundPostCrossing << "\n";
+  cout << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
   if (logFile.good()) logFile.close();
@@ -1303,6 +1436,40 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
         if (a.rfind("--country",0)==0) { eatValue(countryArg); continue; }
+        if (a.rfind("--crossing-mode",0)==0) { eatValue(opts.crossingMode); continue; }
+        if (a.rfind("--roi",0)==0) {
+          string v; eatValue(v);
+          size_t p1=v.find(','); size_t p2=v.find(',', p1==string::npos?0:p1+1); size_t p3=v.find(',', p2==string::npos?0:p2+1);
+          if (p1==string::npos||p2==string::npos||p3==string::npos) throw std::runtime_error("Invalid --roi format, expected x,y,w,h");
+          opts.crossingRoi.x = stoi(v.substr(0,p1));
+          opts.crossingRoi.y = stoi(v.substr(p1+1,p2-p1-1));
+          opts.crossingRoi.width = stoi(v.substr(p2+1,p3-p2-1));
+          opts.crossingRoi.height = stoi(v.substr(p3+1));
+          if (opts.crossingRoi.width <=0 || opts.crossingRoi.height<=0) throw std::runtime_error("Invalid --roi dimensions");
+          opts.crossingRoiProvided = true;
+          continue;
+        }
+        if (a.rfind("--line",0)==0) {
+          string v; eatValue(v);
+          vector<int> parts;
+          size_t start=0; for (int k=0;k<3;k++) {
+            size_t comma = v.find(',', start);
+            if (comma==string::npos) throw std::runtime_error("Invalid --line format, expected x1,y1,x2,y2");
+            parts.push_back(stoi(v.substr(start, comma-start)));
+            start = comma+1;
+          }
+          parts.push_back(stoi(v.substr(start)));
+          opts.crossingP1 = Point(parts[0], parts[1]);
+          opts.crossingP2 = Point(parts[2], parts[3]);
+          continue;
+        }
+        if (a.rfind("--motion-thresh",0)==0) { string v; eatValue(v); opts.motionThresh = stoi(v); continue; }
+        if (a.rfind("--motion-min-area",0)==0) { string v; eatValue(v); opts.motionMinArea = stoi(v); continue; }
+        if (a.rfind("--crossing-debounce",0)==0) { string v; eatValue(v); opts.crossingDebounce = std::max(1, stoi(v)); continue; }
+        if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--log-crossing-metrics",0)==0) { string v; eatValue(v); opts.logCrossingMetrics = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--log-ocr-metrics",0)==0) { string v; eatValue(v); opts.logOcrMetrics = (v=="1"||v=="true"); continue; }
         if (a.rfind("--log-plates-every-n",0)==0) { string v; eatValue(v); opts.logPlatesEveryN = std::max(1, stoi(v)); continue; }
         if (a.rfind("--log-plates-file",0)==0) { eatValue(opts.logPlatesFile); continue; }
         if (a.rfind("--log-plates",0)==0) { string v; eatValue(v); opts.logPlates = (v=="1"||v=="true"); continue; }
@@ -1317,7 +1484,10 @@ int main(int argc, char** argv) {
         if (a=="-h"||a=="--help") {
           cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest]"
                << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
-               << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]\n";
+               << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]"
+               << " [--ocr-only-after-crossing 0|1] [--log-ocr-metrics 0|1]"
+               << " [--crossing-mode off|motion] [--roi x,y,w,h] [--line x1,y1,x2,y2] [--motion-thresh N] [--motion-min-area N] [--crossing-debounce N]"
+               << " [--log-crossing-metrics 0|1]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
