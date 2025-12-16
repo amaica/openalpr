@@ -18,6 +18,9 @@
 #include <regex>
 #include "openalpr/alpr.h"
 #include "openalpr/config.h"
+#include <opencv2/objdetect/objdetect.hpp>
+#include <unistd.h>
+#include "support/filesystem.h"
 #include <stdexcept>
 
 using namespace std;
@@ -350,6 +353,15 @@ struct PreviewRuntimeOptions {
   bool gateAfterCrossing=false;
   std::string reportJsonPath;
   double crossingLinePct=50.0; // percent of frame/ROI height
+};
+
+struct RuntimeResolveResult {
+  bool ok=false;
+  std::string path;
+  std::string reason;
+  std::vector<std::string> tested;
+  bool preferredInvalid=false;
+  std::string preferredReason;
 };
 
 static double iouRect(const Rect& a, const Rect& b) {
@@ -865,6 +877,66 @@ static Rect plateRect(const AlprPlateResult& p) {
   return Rect(minx, miny, maxx-minx, maxy-miny);
 }
 
+static std::string cwdPath() {
+  char buf[4096];
+  if (getcwd(buf, sizeof(buf))) return std::string(buf);
+  return ".";
+}
+
+static std::string joinPath(const std::string& a, const std::string& b) {
+  if (a.empty()) return b;
+  if (b.empty()) return a;
+  if (a.back() == '/') return a + b;
+  return a + "/" + b;
+}
+
+static bool cascadeLoadable(const std::string& cascadePath) {
+  cv::CascadeClassifier cc;
+  return cc.load(cascadePath);
+}
+
+static RuntimeResolveResult resolveRuntimeData(const std::string& country, const std::string& preferred) {
+  RuntimeResolveResult rr;
+  std::vector<std::string> candidates;
+  auto pushIfUnique = [&](const std::string& p){
+    if (p.empty()) return;
+    if (std::find(candidates.begin(), candidates.end(), p) == candidates.end())
+      candidates.push_back(p);
+  };
+  bool hasPreferred = !preferred.empty();
+  pushIfUnique(preferred);
+  const char* envRt = getenv("OPENALPR_RUNTIME_DATA");
+  if (envRt) pushIfUnique(std::string(envRt));
+  pushIfUnique("/usr/share/openalpr/runtime_data");
+  pushIfUnique("/usr/local/share/openalpr/runtime_data");
+  pushIfUnique("./runtime_data");
+  pushIfUnique(joinPath(cwdPath(), "runtime_data"));
+  // try repo root heuristic: if we are inside build/* go up one
+  std::string up = joinPath(cwdPath(), "../runtime_data");
+  pushIfUnique(up);
+
+  bool firstTried = true;
+  for (const auto& base : candidates) {
+    rr.tested.push_back(base);
+    std::string regionDir = joinPath(base, "region");
+    std::string cascade = joinPath(regionDir, country + ".xml");
+    if (!DirectoryExists(base.c_str())) { rr.reason = "runtime_data path missing"; goto next; }
+    if (!DirectoryExists(regionDir.c_str())) { rr.reason = "region dir missing"; goto next; }
+    if (!fileExists(cascade.c_str())) { rr.reason = "cascade file missing: " + cascade; goto next; }
+    if (!cascadeLoadable(cascade)) { rr.reason = "cascade not loadable: " + cascade; goto next; }
+    rr.ok = true;
+    rr.path = base;
+    return rr;
+next:
+    if (firstTried && hasPreferred) {
+      rr.preferredInvalid = true;
+      rr.preferredReason = rr.reason;
+    }
+    firstTried = false;
+  }
+  return rr;
+}
+
 static bool getTimeSeconds(VideoCapture& cap, int frameIdx, double fpsReported, bool fpsValid, double& tOut) {
   double tsMs = cap.get(CAP_PROP_POS_MSEC);
   if (tsMs > 0) {
@@ -910,12 +982,29 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     cerr << "Invalid --crossing-mode (expected off|motion)\n";
     return;
   }
+  RuntimeResolveResult rt = resolveRuntimeData(country, cfg.get("runtime_dir",""));
+  if (rt.preferredInvalid) {
+    cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
+  }
+  if (!rt.ok) {
+    cerr << "[error] Could not resolve runtime_data for country=" << country << endl;
+    if (!rt.reason.empty()) cerr << " reason: " << rt.reason << endl;
+    cerr << " tried: ";
+    for (size_t i=0;i<rt.tested.size();i++) {
+      if (i>0) cerr << ", ";
+      cerr << rt.tested[i];
+    }
+    cerr << "\nPlease install openalpr runtime_data or point --conf runtime_dir to a valid path containing region/*.xml and ocr/.\n";
+    return;
+  }
+  cout << "[config] runtime_data_path_resolved=" << rt.path << " (auto selected)\n";
+  cout << "[config] runtime_data_path_resolved=" << rt.path << " (auto selected)\n";
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
     return;
   }
-  Alpr alpr(country, confPath, "");
+  Alpr alpr(country, confPath, rt.path);
   if (!alpr.isLoaded()) {
     cerr << "Could not load ALPR with config: " << confPath << endl;
     return;
