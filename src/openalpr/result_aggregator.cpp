@@ -109,9 +109,21 @@ namespace alpr
     response.results.total_processing_time_ms = all_results[0].results.total_processing_time_ms;
     response.results.regionsOfInterest = all_results[0].results.regionsOfInterest;
     response.results.profile = all_results[0].results.profile;
+    response.results.vehicle = all_results[0].results.vehicle;
+    response.results.scenario = all_results[0].results.scenario;
+    response.results.ocr_burst_frames = all_results[0].results.ocr_burst_frames;
+    response.results.vote_window = all_results[0].results.vote_window;
+    response.results.min_votes = all_results[0].results.min_votes;
+    response.results.fallback_ocr_enabled = all_results[0].results.fallback_ocr_enabled;
     response.results.ocr_passes_total = 0;
+    response.results.votes_emitted = 0;
+    response.results.final_plate_count = 0;
+    response.results.fallback_attempts = 0;
     for (const auto& r : all_results) {
       response.results.ocr_passes_total += r.results.ocr_passes_total;
+      response.results.votes_emitted += r.results.votes_emitted;
+      response.results.final_plate_count += r.results.final_plate_count;
+      response.results.fallback_attempts += r.results.fallback_attempts;
     }
 
 

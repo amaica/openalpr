@@ -3,6 +3,7 @@
 #include "alpr_impl.h"
 #include "result_aggregator.h"
 #include "support/filesystem.h"
+#include <algorithm>
 
 
 void plateAnalysisThread(void* arg);
@@ -521,6 +522,12 @@ namespace alpr
   {
     AlprFullDetails response;
     response.results.profile = config->profile;
+    response.results.vehicle = config->vehicle;
+    response.results.scenario = config->scenario;
+    response.results.ocr_burst_frames = config->ocrBurstFrames;
+    response.results.vote_window = config->voteWindow;
+    response.results.min_votes = config->minVotes;
+    response.results.fallback_ocr_enabled = config->fallbackOcrEnabled ? 1 : 0;
     
     AlprRecognizers country_recognizers = recognizers[config->country];
     timespec startTime;
@@ -572,19 +579,17 @@ namespace alpr
       }
       if (!pipeline_data.disqualified)
       {
-        AlprPlateResult plateResult;
-        
-        plateResult.country = config->country;
-        
+        AlprPlateResult baseResult;
+        baseResult.country = config->country;
+
         // If there's only one pattern for a country, use it.  Otherwise use the default
         if (country_recognizers.ocr->postProcessor.getPatterns().size() == 1)
-          plateResult.region = country_recognizers.ocr->postProcessor.getPatterns()[0];
+          baseResult.region = country_recognizers.ocr->postProcessor.getPatterns()[0];
         else
-          plateResult.region = defaultRegion;
-        
-        plateResult.regionConfidence = 0;
-        plateResult.plate_index = platecount++;
-        plateResult.requested_topn = topN;
+          baseResult.region = defaultRegion;
+
+        baseResult.regionConfidence = 0;
+        baseResult.requested_topn = topN;
 
         // If using prewarp, remap the plate corners to the original image
         vector<Point2f> cornerPoints = pipeline_data.plate_corners;
@@ -592,11 +597,10 @@ namespace alpr
 
         for (int pointidx = 0; pointidx < 4; pointidx++)
         {
-          plateResult.plate_points[pointidx].x = (int) cornerPoints[pointidx].x;
-          plateResult.plate_points[pointidx].y = (int) cornerPoints[pointidx].y;
+          baseResult.plate_points[pointidx].x = (int) cornerPoints[pointidx].x;
+          baseResult.plate_points[pointidx].y = (int) cornerPoints[pointidx].y;
         }
 
-        
         #ifndef SKIP_STATE_DETECTION
         if (detectRegion && country_recognizers.stateDetector->isLoaded())
         {
@@ -607,85 +611,132 @@ namespace alpr
 
           if (state_candidates.size() > 0)
           {
-            plateResult.region = state_candidates[0].state_code;
-            plateResult.regionConfidence = (int) state_candidates[0].confidence;
+            baseResult.region = state_candidates[0].state_code;
+            baseResult.regionConfidence = (int) state_candidates[0].confidence;
           }
         }
         #endif
 
-        if (plateResult.region.length() > 0 && country_recognizers.ocr->postProcessor.regionIsValid(plateResult.region) == false)
+        if (baseResult.region.length() > 0 && country_recognizers.ocr->postProcessor.regionIsValid(baseResult.region) == false)
         {
-          std::cerr << "Invalid pattern provided: " << plateResult.region << std::endl;
+          std::cerr << "Invalid pattern provided: " << baseResult.region << std::endl;
           std::cerr << "Valid patterns are located in the " << config->country << ".patterns file" << std::endl;
         }
 
-        country_recognizers.ocr->performOCR(&pipeline_data);
-        country_recognizers.ocr->postProcessor.analyze(plateResult.region, topN);
+        cv::Mat charTransformMatrix = getCharacterTransformMatrix(&pipeline_data);
+
+        auto buildPlateFromPost = [&](const std::vector<PPResult>& ppResults, AlprPlateResult& out)->bool {
+          out = baseResult;
+          int bestPlateIndex = 0;
+          bool isBestPlateSelected = false;
+          for (unsigned int pp = 0; pp < ppResults.size(); pp++)
+          {
+            if (isBestPlateSelected == false && ppResults[pp].matchesTemplate){
+              bestPlateIndex = out.topNPlates.size();
+              isBestPlateSelected = true;
+            }
+
+            AlprPlate aplate;
+            aplate.characters = ppResults[pp].letters;
+            aplate.overall_confidence = ppResults[pp].totalscore;
+            aplate.matches_template = ppResults[pp].matchesTemplate;
+
+            // Grab detailed results for each character
+            for (unsigned int c_idx = 0; c_idx < ppResults[pp].letter_details.size(); c_idx++)
+            {
+              AlprChar character_details;
+              Letter l = ppResults[pp].letter_details[c_idx];
+
+              character_details.character = l.letter;
+              character_details.confidence = l.totalscore;
+              cv::Rect char_rect = pipeline_data.charRegionsFlat[l.charposition];
+              std::vector<AlprCoordinate> charpoints = getCharacterPoints(char_rect, charTransformMatrix );
+              for (int cpt = 0; cpt < 4; cpt++)
+                character_details.corners[cpt] = charpoints[cpt];
+              aplate.character_details.push_back(character_details);
+            }
+            out.topNPlates.push_back(aplate);
+          }
+
+          if (out.topNPlates.size() > bestPlateIndex)
+          {
+            out.bestPlate = out.topNPlates[bestPlateIndex];
+            return true;
+          }
+          return false;
+        };
+
+        int burst = std::max(1, config->ocrBurstFrames);
+        int voteWindow = std::max(1, config->voteWindow);
+        int minVotes = std::max(1, config->minVotes);
+        pipeline_data.ocr_passes_total = 0;
+        std::vector<AlprPlateResult> passResults;
+        auto runPass = [&](){
+          country_recognizers.ocr->performOCR(&pipeline_data);
+          country_recognizers.ocr->postProcessor.analyze(baseResult.region, topN);
+          const vector<PPResult> ppResults = country_recognizers.ocr->postProcessor.getResults();
+          AlprPlateResult passResult;
+          if (buildPlateFromPost(ppResults, passResult)) {
+            passResults.push_back(passResult);
+          }
+        };
+
+        for (int i = 0; i < burst; i++) runPass();
+
+        int localFallbackAttempts = 0;
+        if (passResults.size() == 0 && config->fallbackOcrEnabled)
+        {
+          localFallbackAttempts = std::max(1, voteWindow);
+          for (int i = 0; i < localFallbackAttempts; i++) runPass();
+        }
+
+        if (passResults.size() > static_cast<size_t>(voteWindow)) {
+          passResults.erase(passResults.begin(), passResults.end() - voteWindow);
+        }
+
+        response.results.votes_emitted += static_cast<int>(passResults.size());
+        response.results.fallback_attempts += localFallbackAttempts;
         response.results.ocr_passes_total += pipeline_data.ocr_passes_total;
 
-        timespec resultsStartTime;
-        getTimeMonotonic(&resultsStartTime);
-
-        const vector<PPResult> ppResults = country_recognizers.ocr->postProcessor.getResults();
-
-        int bestPlateIndex = 0;
-
-        cv::Mat charTransformMatrix = getCharacterTransformMatrix(&pipeline_data);
-        bool isBestPlateSelected = false;
-        for (unsigned int pp = 0; pp < ppResults.size(); pp++)
-        {
-
-          // Set our "best plate" match to either the first entry, or the first entry with a postprocessor template match
-          if (isBestPlateSelected == false && ppResults[pp].matchesTemplate){
-            bestPlateIndex = plateResult.topNPlates.size();
-            isBestPlateSelected = true;
+        struct VoteEntry {
+          int count = 0;
+          double bestConf = -1.0;
+          AlprPlateResult bestResult;
+        };
+        std::map<std::string, VoteEntry> voteMap;
+        for (const auto& res : passResults) {
+          if (res.bestPlate.characters.empty()) continue;
+          auto& entry = voteMap[res.bestPlate.characters];
+          entry.count += 1;
+          if (res.bestPlate.overall_confidence > entry.bestConf) {
+            entry.bestConf = res.bestPlate.overall_confidence;
+            entry.bestResult = res;
           }
+        }
 
-          AlprPlate aplate;
-          aplate.characters = ppResults[pp].letters;
-          aplate.overall_confidence = ppResults[pp].totalscore;
-          aplate.matches_template = ppResults[pp].matchesTemplate;
-
-          // Grab detailed results for each character
-          for (unsigned int c_idx = 0; c_idx < ppResults[pp].letter_details.size(); c_idx++)
-          {
-            AlprChar character_details;
-            Letter l = ppResults[pp].letter_details[c_idx];
-            
-            character_details.character = l.letter;
-            character_details.confidence = l.totalscore;
-            cv::Rect char_rect = pipeline_data.charRegionsFlat[l.charposition];
-            std::vector<AlprCoordinate> charpoints = getCharacterPoints(char_rect, charTransformMatrix );
-            for (int cpt = 0; cpt < 4; cpt++)
-              character_details.corners[cpt] = charpoints[cpt];
-            aplate.character_details.push_back(character_details);
+        int bestCount = 0;
+        double bestConf = -1.0;
+        bool hasWinner = false;
+        AlprPlateResult winner;
+        for (const auto& kv : voteMap) {
+          if (kv.second.count > bestCount ||
+              (kv.second.count == bestCount && kv.second.bestConf > bestConf)) {
+            bestCount = kv.second.count;
+            bestConf = kv.second.bestConf;
+            winner = kv.second.bestResult;
+            hasWinner = true;
           }
-          plateResult.topNPlates.push_back(aplate);
         }
 
-        if (plateResult.topNPlates.size() > bestPlateIndex)
+        if (hasWinner && bestCount >= minVotes)
         {
-          AlprPlate bestPlate;
-          bestPlate.characters = plateResult.topNPlates[bestPlateIndex].characters;
-          bestPlate.matches_template = plateResult.topNPlates[bestPlateIndex].matches_template;
-          bestPlate.overall_confidence = plateResult.topNPlates[bestPlateIndex].overall_confidence;
-          bestPlate.character_details = plateResult.topNPlates[bestPlateIndex].character_details;
-
-          plateResult.bestPlate = bestPlate;
-        }
-
-        timespec plateEndTime;
-        getTimeMonotonic(&plateEndTime);
-        plateResult.processing_time_ms = diffclock(platestarttime, plateEndTime);
-        if (config->debugTiming)
-        {
-          cout << "Result Generation Time: " << diffclock(resultsStartTime, plateEndTime) << "ms." << endl;
-        }
-
-        if (plateResult.topNPlates.size() > 0)
-        {
+          timespec plateEndTime;
+          getTimeMonotonic(&plateEndTime);
+          winner.processing_time_ms = diffclock(platestarttime, plateEndTime);
+          winner.plate_index = platecount++;
+          response.results.final_plate_count += 1;
           plateDetected = true;
-          response.results.plates.push_back(plateResult);
+          response.results.plates.push_back(winner);
         }
       }
 
@@ -813,6 +864,15 @@ namespace alpr
     cJSON_AddNumberToObject(root,"processing_time_ms", results.total_processing_time_ms );
     cJSON_AddStringToObject(root,"profile", results.profile.c_str());
     cJSON_AddNumberToObject(root,"ocr_passes_total", results.ocr_passes_total);
+    cJSON_AddStringToObject(root,"vehicle", results.vehicle.c_str());
+    cJSON_AddStringToObject(root,"scenario", results.scenario.c_str());
+    cJSON_AddNumberToObject(root,"ocr_burst_frames", results.ocr_burst_frames);
+    cJSON_AddNumberToObject(root,"vote_window", results.vote_window);
+    cJSON_AddNumberToObject(root,"min_votes", results.min_votes);
+    cJSON_AddNumberToObject(root,"votes_emitted", results.votes_emitted);
+    cJSON_AddNumberToObject(root,"final_plate_count", results.final_plate_count);
+    cJSON_AddNumberToObject(root,"fallback_attempts", results.fallback_attempts);
+    cJSON_AddNumberToObject(root,"fallback_ocr_enabled", results.fallback_ocr_enabled);
 
     // Add the regions of interest to the JSON
     cJSON *rois;
@@ -945,6 +1005,24 @@ namespace alpr
     if (profileObj && profileObj->valuestring) allResults.profile = profileObj->valuestring;
     cJSON* passesObj = cJSON_GetObjectItem(root, "ocr_passes_total");
     allResults.ocr_passes_total = passesObj ? passesObj->valueint : 0;
+    cJSON* vehicleObj = cJSON_GetObjectItem(root, "vehicle");
+    if (vehicleObj && vehicleObj->valuestring) allResults.vehicle = vehicleObj->valuestring;
+    cJSON* scenarioObj = cJSON_GetObjectItem(root, "scenario");
+    if (scenarioObj && scenarioObj->valuestring) allResults.scenario = scenarioObj->valuestring;
+    cJSON* burstObj = cJSON_GetObjectItem(root, "ocr_burst_frames");
+    allResults.ocr_burst_frames = burstObj ? burstObj->valueint : 0;
+    cJSON* voteWindowObj = cJSON_GetObjectItem(root, "vote_window");
+    allResults.vote_window = voteWindowObj ? voteWindowObj->valueint : 0;
+    cJSON* minVotesObj = cJSON_GetObjectItem(root, "min_votes");
+    allResults.min_votes = minVotesObj ? minVotesObj->valueint : 0;
+    cJSON* votesEmittedObj = cJSON_GetObjectItem(root, "votes_emitted");
+    allResults.votes_emitted = votesEmittedObj ? votesEmittedObj->valueint : 0;
+    cJSON* finalPlateCountObj = cJSON_GetObjectItem(root, "final_plate_count");
+    allResults.final_plate_count = finalPlateCountObj ? finalPlateCountObj->valueint : 0;
+    cJSON* fbAttemptsObj = cJSON_GetObjectItem(root, "fallback_attempts");
+    allResults.fallback_attempts = fbAttemptsObj ? fbAttemptsObj->valueint : 0;
+    cJSON* fbEnabledObj = cJSON_GetObjectItem(root, "fallback_ocr_enabled");
+    allResults.fallback_ocr_enabled = fbEnabledObj ? fbEnabledObj->valueint : 0;
 
 
     cJSON* rois = cJSON_GetObjectItem(root,"regions_of_interest");

@@ -112,6 +112,13 @@ namespace alpr
       AlprResults() {
         frame_number = -1;
         ocr_passes_total = 0;
+        votes_emitted = 0;
+        final_plate_count = 0;
+        fallback_attempts = 0;
+        ocr_burst_frames = 0;
+        vote_window = 0;
+        min_votes = 0;
+        fallback_ocr_enabled = 0;
       };
       virtual ~AlprResults() {};
 
@@ -122,6 +129,15 @@ namespace alpr
       float total_processing_time_ms;
       std::string profile;
       int ocr_passes_total;
+      std::string vehicle;
+      std::string scenario;
+      int ocr_burst_frames;
+      int vote_window;
+      int min_votes;
+      int votes_emitted;
+      int final_plate_count;
+      int fallback_attempts;
+      int fallback_ocr_enabled;
 
       std::vector<AlprPlateResult> plates;
 
