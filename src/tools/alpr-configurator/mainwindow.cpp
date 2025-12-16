@@ -711,6 +711,12 @@ void MainWindow::runDoctor() {
   proc.waitForFinished(-1);
   QString out = proc.readAllStandardOutput() + proc.readAllStandardError();
   QMessageBox::information(this, "Doctor", out);
+  // If runtime is empty, fall back to standard path
+  namespace fs = std::filesystem;
+  if (runtimeEdit_ && runtimeEdit_->text().isEmpty()) {
+    fs::path stdPath("/usr/share/openalpr/runtime_data");
+    if (fs::exists(stdPath)) runtimeEdit_->setText(QString::fromStdString(stdPath.string()));
+  }
   updateStatusIndicators();
 }
 
