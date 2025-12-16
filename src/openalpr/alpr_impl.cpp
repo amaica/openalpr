@@ -353,9 +353,9 @@ namespace alpr
     std::string vehicleProfile = decideVehicleProfile(warpedRegionsOfInterest);
     std::cout << "[vehicle] profile=" << vehicleProfile << std::endl;
 
-    std::string regionDir = joinPath(config->getRuntimeBaseDir(), "region");
-    std::string br2Moto = joinPath(regionDir, "br2_moto.xml");
-    std::string brMoto = joinPath(regionDir, "br_moto.xml");
+    std::string regionDir = config->getRuntimeBaseDir() + "/region";
+    std::string br2Moto = regionDir + "/br2_moto.xml";
+    std::string brMoto = regionDir + "/br_moto.xml";
     bool br2MotoExists = fileExists(br2Moto.c_str());
     bool brMotoExists = fileExists(brMoto.c_str());
     static bool motoWarned = false;
