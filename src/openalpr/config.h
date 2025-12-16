@@ -160,6 +160,16 @@ namespace alpr
       std::string brHybridFallbackRegion; // format: country:pattern (e.g., eu:ad)
       float brHybridMinConfidence;
 
+      // Vehicle/scenario strategy (core-driven)
+      std::string vehicle;         // car | moto
+      std::string scenario;        // default | garagem
+      int ocrBurstFrames;          // burst passes for OCR
+      int voteWindow;              // window for temporal voting
+      int minVotes;                // minimum votes for acceptance
+      bool fallbackOcrEnabled;     // enable fallback OCR attempts
+      bool motoUpsample;           // enable upsample for moto crops
+      float motoUpsampleScale;     // upsample scale factor
+
       // Vehicle profile selection
       std::string vehicleProfileMode; // auto | car | moto
       float motoAspectRatioMin;
