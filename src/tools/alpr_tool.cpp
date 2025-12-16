@@ -357,6 +357,7 @@ struct PreviewRuntimeOptions {
   double crossingLinePct=50.0; // percent of frame/ROI height
   std::string profile="default";
   int ocrBurstFrames=1;
+  int ocrMinVotes=1;
 };
 
 struct RuntimeResolveResult {
@@ -1106,6 +1107,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
+  cfg.set("profile", opts.profile);
+  cfg.save();
   if (cfg.get("ocr_only_after_crossing","0") == "1") opts.ocrOnlyAfterCrossing = true;
   if (cfg.get("log_ocr_metrics","0") == "1") opts.logOcrMetrics = true;
   if (cfg.get("log_crossing_metrics","0") == "1") opts.logCrossingMetrics = true;
@@ -1114,6 +1117,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     return;
   }
   if (opts.ocrBurstFrames <= 0) opts.ocrBurstFrames = 1;
+  if (opts.ocrMinVotes <= 0) opts.ocrMinVotes = 1;
   RuntimeResolveResult rt = resolveRuntimeData(country, runtimePreferred);
   if (rt.preferredInvalid) {
     cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
@@ -1214,7 +1218,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   std::set<std::string> finalVotes;
   std::deque<std::string> burstWindow;
   std::string lastVote;
-  auto computeMajority = [](const std::deque<std::string>& win)->std::string{
+  int ocrPassesTotal = 0;
+  auto computeMajority = [](const std::deque<std::string>& win)->std::pair<std::string,int>{
     std::map<std::string,int> counts;
     for (const auto& s : win) {
       if (s.empty() || s == "<none>") continue;
@@ -1225,7 +1230,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     for (const auto& kv : counts) {
       if (kv.second > best) { best = kv.second; bestStr = kv.first; }
     }
-    return best > 0 ? bestStr : std::string();
+    if (best <= 0) return std::make_pair(std::string(), 0);
+    return std::make_pair(bestStr, best);
   };
   bool crossingEnabled = (opts.crossingMode == "motion");
   if (crossingEnabled && (opts.crossingP1 == opts.crossingP2)) {
@@ -1399,6 +1405,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       alprCallsTotal++;
       if (isPostCrossing) alprCallsPostCrossing++; else alprCallsPreCrossing++;
     }
+    ocrPassesTotal += results.ocr_passes_total;
     double tNow = 0.0;
     bool tOk = getTimeSeconds(cap, frameIdx, fpsReported, fpsValid, tNow);
     if (!tOk) {
@@ -1599,13 +1606,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       burstWindow.push_back(framePlateText.empty() ? std::string("<none>") : framePlateText);
       while (static_cast<int>(burstWindow.size()) > opts.ocrBurstFrames) burstWindow.pop_front();
       if (static_cast<int>(burstWindow.size()) == opts.ocrBurstFrames) {
-        std::string vote = computeMajority(burstWindow);
-        if (!vote.empty() && vote != lastVote) {
-          lastVote = vote;
+        auto voteRes = computeMajority(burstWindow);
+        if (!voteRes.first.empty() && voteRes.second >= opts.ocrMinVotes && voteRes.first != lastVote) {
+          lastVote = voteRes.first;
           votesEmitted++;
-          finalVotes.insert(vote);
+          finalVotes.insert(voteRes.first);
           std::ostringstream v;
-          v << "[vote] profile=" << opts.profile << " plate=" << vote << " window=" << opts.ocrBurstFrames;
+          v << "[vote] profile=" << opts.profile << " plate=" << voteRes.first << " window=" << opts.ocrBurstFrames;
           logLine(v.str());
         }
       }
@@ -1664,6 +1671,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "fps=" << fpsReport << "\n";
   cout << "profile=" << opts.profile << "\n";
   cout << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
+  cout << "ocr_passes_total=" << ocrPassesTotal << "\n";
   cout << "votes_emitted=" << votesEmitted << "\n";
   cout << "final_plate_count=" << finalVotes.size() << "\n";
 
@@ -1683,6 +1691,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       js << "  \"frames_after_crossing\": " << framesAfterCrossing << ",\n";
       js << "  \"profile\": \"" << opts.profile << "\",\n";
       js << "  \"ocr_burst_frames\": " << opts.ocrBurstFrames << ",\n";
+      js << "  \"ocr_passes_total\": " << ocrPassesTotal << ",\n";
       js << "  \"votes_emitted\": " << votesEmitted << ",\n";
       js << "  \"final_plate_count\": " << finalVotes.size() << "\n";
       js << "}\n";
@@ -1933,6 +1942,7 @@ int main(int argc, char** argv) {
       bool previewDoctor=false;
       opts.profile = "default";
       opts.ocrBurstFrames = 1;
+      opts.ocrMinVotes = 1;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -2010,9 +2020,9 @@ int main(int argc, char** argv) {
         if (a.rfind("--profile",0)==0) {
           string v; eatValue(v);
           std::transform(v.begin(), v.end(), v.begin(), ::tolower);
-          if (v == "default") { opts.profile = "default"; opts.ocrBurstFrames = 1; }
-          else if (v == "moto") { opts.profile = "moto"; opts.ocrBurstFrames = 6; }
-          else if (v == "garagem") { opts.profile = "garagem"; opts.ocrBurstFrames = 10; }
+          if (v == "default") { opts.profile = "default"; opts.ocrBurstFrames = 1; opts.ocrMinVotes = 1; }
+          else if (v == "moto") { opts.profile = "moto"; opts.ocrBurstFrames = 10; opts.ocrMinVotes = 3; }
+          else if (v == "garagem") { opts.profile = "garagem"; opts.ocrBurstFrames = 15; opts.ocrMinVotes = 3; }
           else throw std::runtime_error("Invalid --profile (expected default|moto|garagem)");
           continue;
         }
