@@ -1194,6 +1194,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   int framesTotal = 0;
   int ocrCallsTotal = 0;
   int ocrCallsPostCrossing = 0;
+  int alprCallsTotal = 0;
+  int alprCallsPreCrossing = 0;
+  int alprCallsPostCrossing = 0;
   int platesFound = 0;
   int platesNone = 0;
   int platesFoundPostCrossing = 0;
@@ -1231,7 +1234,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     Rect crossingRoi = opts.crossingRoiProvided ? clampRect(opts.crossingRoi) : Rect(0,0,frame.cols, frame.rows);
     Rect alprRoi = opts.alprRoiProvided ? clampRect(opts.alprRoi) : Rect(0,0,frame.cols, frame.rows);
     vector<AlprRegionOfInterest> rois;
-    if (alprRoi.area() > 0) rois.push_back(AlprRegionOfInterest(alprRoi.x, alprRoi.y, alprRoi.width, alprRoi.height));
+    bool isPostCrossing = (crossingFrame >= 0 && frameIdx >= crossingFrame);
+    if (alprRoi.area() > 0 && isPostCrossing) rois.push_back(AlprRegionOfInterest(alprRoi.x, alprRoi.y, alprRoi.width, alprRoi.height));
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
@@ -1333,10 +1337,12 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     AlprResults results;
     if (opts.maxSeconds > 0 && (wallSeconds() - startWall) >= opts.maxSeconds) break;
 
-    if (!ocrRan) {
+    bool allowAlpr = (!opts.ocrOnlyAfterCrossing) || isPostCrossing;
+    if (!allowAlpr) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
       results.img_height = frame.rows;
+      putText(frame, "GATED (waiting crossing)", Point(10, 140), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0,0,255), 2, LINE_AA);
     } else if (selfTest) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
@@ -1362,6 +1368,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       }
     } else {
       results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
+      alprCallsTotal++;
+      if (isPostCrossing) alprCallsPostCrossing++; else alprCallsPreCrossing++;
     }
     double tNow = 0.0;
     bool tOk = getTimeSeconds(cap, frameIdx, fpsReported, fpsValid, tNow);
@@ -1385,9 +1393,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         if (!plate.bestPlate.characters.empty()) { plateFoundThisFrame = true; break; }
       }
     }
-    bool isPostCrossing = (crossingFrame >= 0 && frameIdx >= crossingFrame);
     bool crossedNow = crossingEvent;
-    if (ocrRan) {
+    if (allowAlpr) {
       if (plateFoundThisFrame) platesFound++; else platesNone++;
     }
     if (trackingActive) {
@@ -1534,7 +1541,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     }
 
     bool crossedFrame = isPostCrossing;
-    if (ocrRan) {
+    if (allowAlpr) {
       if (isPostCrossing) {
         ocrCallsPostCrossing++;
         if (plateFoundThisFrame) platesFoundPostCrossing++; else platesNonePostCrossing++;
@@ -1546,7 +1553,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       std::string reason = plateFoundThisFrame ? "ok" : (gatedByCrossing ? "gated_by_crossing" : "no_candidates");
       m << "frame=" << frameIdx
         << " crossed=" << (crossedFrame ? 1 : 0)
-        << " ocr_ran=" << (ocrRan ? 1 : 0)
+        << " ocr_ran=" << (allowAlpr ? 1 : 0)
         << " gated_by_crossing=" << (gatedByCrossing ? 1 : 0)
         << " motion=" << (crossingEvent || motionDetected ? 1 : 0);
       if (opts.logOcrMetrics) {
@@ -1596,6 +1603,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "frames=" << framesTotal << "\n";
   cout << "ocr_calls=" << ocrCallsTotal << "\n";
   cout << "ocr_calls_post_crossing=" << ocrCallsPostCrossing << "\n";
+  cout << "alpr_calls_pre_crossing=" << alprCallsPreCrossing << "\n";
+  cout << "alpr_calls_post_crossing=" << alprCallsPostCrossing << "\n";
   cout << "plates_found=" << platesFound << "\n";
   cout << "plates_none=" << platesNone << "\n";
   cout << "plates_found_post_crossing=" << platesFoundPostCrossing << "\n";

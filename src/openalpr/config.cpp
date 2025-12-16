@@ -65,8 +65,10 @@ namespace alpr
       std::string cascade = regionDir + "/" + country + ".xml";
       if (!DirectoryExists(base.c_str())) { rr.reason = "runtime_data path missing"; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
       if (!DirectoryExists(regionDir.c_str())) { rr.reason = "region dir missing"; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
-      if (!fileExists(cascade.c_str())) { rr.reason = "cascade file missing: " + cascade; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
-      if (!cascadeLoadable(cascade)) { rr.reason = "cascade not loadable: " + cascade; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
+      if (!country.empty()) {
+        if (!fileExists(cascade.c_str())) { rr.reason = "cascade file missing: " + cascade; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
+        if (!cascadeLoadable(cascade)) { rr.reason = "cascade not loadable: " + cascade; if (hasPreferred && base==preferred) { rr.preferredInvalid=true; rr.preferredReason=rr.reason; } continue; }
+      }
       rr.ok = true;
       rr.path = base;
       return rr;
@@ -222,12 +224,14 @@ namespace alpr
 
     RuntimeCheckResult rr = resolveRuntimeValidated(country, runtimeBaseDir);
     if (rr.preferredInvalid) {
-      std::cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rr.preferredReason << "; trying fallbacks...\n";
+      std::string cstr = country.empty() ? "<unset>" : country;
+      std::cerr << "[warn] runtime_data from config invalid for country=" << cstr << ": " << rr.preferredReason << "; trying fallbacks...\n";
     }
     if (rr.ok) {
       runtimeBaseDir = rr.path;
     } else {
-      std::cerr << "[error] Could not resolve runtime_data for country=" << country << std::endl;
+      std::string cstr = country.empty() ? "<unset>" : country;
+      std::cerr << "[error] Could not resolve runtime_data for country=" << cstr << std::endl;
       if (!rr.reason.empty()) std::cerr << " reason: " << rr.reason << std::endl;
       std::cerr << " tried: ";
       for (size_t i=0;i<rr.tried.size();i++) {
