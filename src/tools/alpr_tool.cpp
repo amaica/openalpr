@@ -973,7 +973,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   int lastStableSide = 0;
   int sideStreakSide = 0;
   int sideStreakCount = 0;
-  bool crossingReached = false;
+  int crossingFrame = -1;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
@@ -1006,7 +1006,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     bool motionDetected = false;
     bool crossingEvent = false;
     int currentSide = 0;
-    bool gatedByCrossing = opts.ocrOnlyAfterCrossing && !crossingReached;
+    bool gatedByCrossing = opts.ocrOnlyAfterCrossing && crossingFrame < 0;
     bool ocrRan = !gatedByCrossing;
     if (crossingEnabled) {
       Mat gray;
@@ -1046,7 +1046,6 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         if (lastStableSide == 0 && sideStreakCount >= opts.crossingDebounce) {
           lastStableSide = sideStreakSide;
         } else if (lastStableSide != 0 && sideStreakSide != lastStableSide && sideStreakCount >= opts.crossingDebounce) {
-          crossingReached = true;
           crossingEvent = true;
           lastStableSide = sideStreakSide;
         }
@@ -1054,7 +1053,11 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         sideStreakSide = 0;
         sideStreakCount = 0;
       }
-      gatedByCrossing = opts.ocrOnlyAfterCrossing && !crossingReached;
+      if (crossingEvent && crossingFrame < 0) {
+        crossingFrame = frameIdx;
+        logLine(string("[crossing] frame=") + to_string(crossingFrame));
+      }
+      gatedByCrossing = opts.ocrOnlyAfterCrossing && crossingFrame < 0;
       ocrRan = !gatedByCrossing;
     }
 
@@ -1113,6 +1116,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         if (!plate.bestPlate.characters.empty()) { plateFoundThisFrame = true; break; }
       }
     }
+    bool isPostCrossing = (crossingFrame >= 0 && frameIdx >= crossingFrame);
     bool crossedNow = crossingEvent;
     if (ocrRan) {
       if (plateFoundThisFrame) platesFound++; else platesNone++;
@@ -1260,9 +1264,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       drawResults(frame, results);
     }
 
-    bool crossedFrame = crossingReached || crossedNow;
+    bool crossedFrame = isPostCrossing;
     if (ocrRan) {
-      if (crossedFrame) {
+      if (isPostCrossing) {
         ocrCallsPostCrossing++;
         if (plateFoundThisFrame) platesFoundPostCrossing++; else platesNonePostCrossing++;
       }
@@ -1327,6 +1331,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "plates_none=" << platesNone << "\n";
   cout << "plates_found_post_crossing=" << platesFoundPostCrossing << "\n";
   cout << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
+  cout << "crossing_frame=" << crossingFrame << "\n";
+  int framesAfterCrossing = (crossingFrame >= 0) ? (framesTotal - crossingFrame + 1) : 0;
+  cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
   if (logFile.good()) logFile.close();
