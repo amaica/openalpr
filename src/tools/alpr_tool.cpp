@@ -2043,6 +2043,26 @@ int main(int argc, char** argv) {
       cmdPreview(src, conf, log, selfTest, opts, countryArg, previewDoctor, false);
       return 0;
     }
+    if (sub == "ocr-proof") {
+      string conf = "./config/openalpr.conf.defaults";
+      string src;
+      for (size_t i=0;i<subArgs.size();++i) {
+        string a = subArgs[i];
+        auto eatValue = [&](string& target){
+          if (a.find('=') != string::npos) target = a.substr(a.find('=')+1);
+          else if (i+1<subArgs.size()) target = subArgs[++i];
+          else throw std::runtime_error("missing value after "+a);
+        };
+        if (a.rfind("--conf",0)==0) { eatValue(conf); continue; }
+        if (a.rfind("--source",0)==0) { eatValue(src); continue; }
+        if (a=="-h"||a=="--help") {
+          cout << "alpr-tool ocr-proof --source <video|image> [--conf <path>]\n";
+          return 0;
+        }
+        throw std::runtime_error(string("Unknown arg: ")+a);
+      }
+      return cmdOcrProof(src, conf);
+    }
     if (sub == "self-test") {
       return cmdSelfTest();
     }
@@ -2062,6 +2082,93 @@ int main(int argc, char** argv) {
       cmdExportYolo(modelArg.getValue(), outArg.getValue(), imgszArg.getValue(), confArg.getValue(), updateArg.getValue());
       return 0;
     }
+
+static int cmdOcrProof(const std::string& source, const std::string& confPath) {
+  if (source.empty()) {
+    std::cerr << "--source is required for ocr-proof\n";
+    return 1;
+  }
+  ConfigWriter cfg;
+  if (!cfg.load(confPath)) {
+    std::cerr << "Could not load conf: " << confPath << std::endl;
+    return 1;
+  }
+  std::string country = cfg.get("country","br2");
+  std::string runtimePreferred = cfg.get("runtime_dir","");
+  RuntimeResolveResult rt = resolveRuntimeData(country, runtimePreferred);
+  if (!rt.ok) {
+    std::cerr << "[error] Could not resolve runtime_data for country=" << country << std::endl;
+    if (!rt.reason.empty()) std::cerr << " reason: " << rt.reason << std::endl;
+    return 1;
+  }
+  ensureParentDir("artifacts/proof/ocr_profile_proof.json");
+  struct ProofRun {
+    std::string profile;
+    int frames=0;
+    int ocr_calls=0;
+    int ocr_passes_total=0;
+    int plates_found=0;
+    double elapsed_ms=0.0;
+  };
+  std::vector<ProofRun> runs;
+  const std::vector<std::string> profiles = {"default","moto","garagem"};
+  for (const auto& prof : profiles) {
+    cfg.set("profile", prof);
+    cfg.save();
+    ProofRun r;
+    r.profile = prof;
+    VideoCapture cap;
+    if (!openCapture(source, cap)) {
+      std::cerr << "Could not open source: " << source << std::endl;
+      return 1;
+    }
+    Alpr alpr(country, confPath, rt.path);
+    if (!alpr.isLoaded()) {
+      std::cerr << "Could not load ALPR with config: " << confPath << std::endl;
+      return 1;
+    }
+    auto start = std::chrono::steady_clock::now();
+    int frameLimit = 200;
+    while (r.frames < frameLimit) {
+      cv::Mat frame;
+      if (!cap.read(frame) || frame.empty()) break;
+      r.frames++;
+      r.ocr_calls++;
+      cv::Mat bgr;
+      if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
+      if (!bgr.isContinuous()) bgr = bgr.clone();
+      AlprResults results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, {});
+      r.ocr_passes_total += results.ocr_passes_total;
+      for (const auto& p : results.plates) {
+        if (!p.bestPlate.characters.empty()) r.plates_found++;
+      }
+    }
+    auto end = std::chrono::steady_clock::now();
+    r.elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    runs.push_back(r);
+  }
+
+  std::ofstream out("artifacts/proof/ocr_profile_proof.json");
+  if (!out.good()) {
+    std::cerr << "Could not write proof file\n";
+    return 1;
+  }
+  out << "{\n  \"runs\": [\n";
+  for (size_t i=0;i<runs.size();++i) {
+    const auto& r = runs[i];
+    out << "    {\"profile\": \"" << r.profile << "\", "
+        << "\"frames\": " << r.frames << ", "
+        << "\"ocr_calls\": " << r.ocr_calls << ", "
+        << "\"ocr_passes_total\": " << r.ocr_passes_total << ", "
+        << "\"plates_found\": " << r.plates_found << ", "
+        << "\"elapsed_ms\": " << std::fixed << std::setprecision(2) << r.elapsed_ms << "}";
+    if (i + 1 < runs.size()) out << ",";
+    out << "\n";
+  }
+  out << "  ]\n}\n";
+  std::cout << "Proof written to artifacts/proof/ocr_profile_proof.json\n";
+  return 0;
+}
   } catch (TCLAP::ArgException& e) {
     cerr << "Error: " << e.error() << " for arg " << e.argId() << endl;
     return 1;
