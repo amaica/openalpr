@@ -513,6 +513,8 @@ void MainWindow::persistCurrentSource() {
   s.country = countryEdit_->currentText();
   s.confPath = confPathEdit_->text();
   s.runtimeData = runtimeEdit_->text();
+  if (!runtimeEdit_->text().isEmpty())
+    project_.setRuntimeData(runtimeEdit_->text());
   s.roi = QJsonDocument::fromJson(roiEdit_->toPlainText().toUtf8()).object();
   s.crossing = QJsonObject{{"line", lineEdit_->text()}};
   s.prewarp = QJsonObject{{"enabled", prewarpEnableCheck_->isChecked()}, {"points", QJsonDocument::fromJson(prewarpPointsEdit_->toPlainText().toUtf8()).array()}};
