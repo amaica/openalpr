@@ -14,7 +14,6 @@ set(lpr_source_files
  detection/detectorfactory.cpp
  detection/detectormorph.cpp
  detection/detectormask.cpp
- detection/yolo_plate_detector.cpp
  licenseplatecandidate.cpp
  utility.cpp
  ocr/tesseract_ocr.cpp
@@ -57,20 +56,11 @@ add_library(openalpr 		SHARED ${lpr_source_files} )
 
 set_target_properties(openalpr PROPERTIES SOVERSION ${OPENALPR_MAJOR_VERSION})
 
-TARGET_LINK_LIBRARIES(openalpr-static
-  support
-  ${STATE_DETECTION_LIB}
-  ${OpenCV_LIBS}
-  ${Tesseract_LIBRARIES}
-  ${ONNXRUNTIME_LIBS}
-)
-
 TARGET_LINK_LIBRARIES(openalpr
   support
   ${STATE_DETECTION_LIB}
   ${OpenCV_LIBS}
   ${Tesseract_LIBRARIES}
-  ${ONNXRUNTIME_LIBS}
 )
 
 

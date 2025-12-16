@@ -877,26 +877,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "[config] conf_path=" << confPath << "\n";
   cout << "[config] runtime_data_path=" << cfg.get("runtime_dir","") << "\n";
   cout << "[config] country=" << country << "\n";
-  string detectorType = cfg.get("detector_type","auto");
-  string yoloModel = cfg.get("yolo_model_path", cfg.get("yolo_model",""));
-  string detector = cfg.get("detector","yolo");
-  string provider = cfg.get("yolo_provider", cfg.get("yolo_device","cpu"));
-  bool modelExists = false;
-  if (!yoloModel.empty()) {
-    ifstream f(yoloModel);
-    modelExists = f.good();
-  }
-  cout << "[yolo] model_path=" << (yoloModel.empty() ? "<empty>" : yoloModel)
-       << " exists=" << (modelExists ? "true" : "false")
-       << " provider=" << provider
-       << " detector_type=" << detectorType
-       << " detector=" << detector
-       << "\n";
-  bool yoloReady = modelExists && (detector == "yolo" || detectorType == "yolo" || detectorType == "auto");
-  string fallbackReason;
-  if (!yoloReady) {
-    fallbackReason = modelExists ? "detector_not_yolo" : "model_missing";
-  }
+  string skipDet = cfg.get("skip_detection","0");
+  cout << "[config] skip_detection=" << skipDet << "\n";
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
@@ -949,15 +931,6 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     if (!bgr.isContinuous()) bgr = bgr.clone();
     double lineA = (roi.area() > 0 ? roi.y + speedCfg.yA * roi.height : speedCfg.yA * frame.rows);
     double lineB = (roi.area() > 0 ? roi.y + speedCfg.yB * roi.height : speedCfg.yB * frame.rows);
-
-    if (!detectorLogged) {
-      if (yoloReady) logLine("[detector] using=yolo");
-      else {
-        std::ostringstream oss; oss << "[detector] using=classic fallback_reason=" << fallbackReason;
-        logLine(oss.str());
-      }
-      detectorLogged = true;
-    }
 
     AlprResults results;
     if (selfTest) {

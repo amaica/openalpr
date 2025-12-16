@@ -23,7 +23,6 @@
 #include "detectorcpu.h"
 #include "detectorcuda.h"
 #include "config.h"
-#include "yolo_plate_detector.h"
 
 namespace alpr
 {

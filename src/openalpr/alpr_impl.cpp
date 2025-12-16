@@ -96,6 +96,8 @@ namespace alpr
       return;
     }
 
+    std::cout << "[config] skip_detection=" << (config->skipDetection ? 1 : 0) << std::endl;
+
     prewarp = new PreWarp(config);
     
     loadRecognizers();
@@ -519,6 +521,7 @@ namespace alpr
     }
     else
     {
+      std::cout << "[detector] skip_detection=1 (using provided ROIs=" << warpedRegionsOfInterest.size() << ")" << std::endl;
       // They have elected to skip plate detection.  Instead, return a list of plate regions
       // based on their regions of interest
       for (unsigned int i = 0; i < warpedRegionsOfInterest.size(); i++)
