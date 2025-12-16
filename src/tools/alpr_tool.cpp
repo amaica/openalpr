@@ -8,6 +8,7 @@
 #include <map>
 #include <iostream>
 #include <iomanip>
+#include <chrono>
 #include <limits>
 #include <climits>
 #include <sys/stat.h>
@@ -328,6 +329,9 @@ struct PreviewRuntimeOptions {
   int trackTtlMs=1000;
   std::string logPlatesFile;
   int maxSeconds=0;
+  bool gateAfterCrossing=false;
+  std::string reportJsonPath;
+  double crossingLinePct=50.0; // percent of frame/ROI height
 };
 
 static double iouRect(const Rect& a, const Rect& b) {
@@ -934,10 +938,15 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   const std::string detectorLabel = (cfg.get("skip_detection","0") == "1") ? "skip" : "classic";
   bool detectorLogged = false;
   double startWall = wallSeconds();
+  auto wallClockStart = std::chrono::system_clock::now();
+  int framesTotal = 0;
+  int platesFound = 0;
+  int platesNone = 0;
   while (true) {
     Mat frame;
     if (!cap.read(frame) || frame.empty()) break;
     frameIdx++;
+    framesTotal++;
     if (opts.maxSeconds > 0) {
       double elapsed = wallSeconds() - startWall;
       if (elapsed >= opts.maxSeconds) break;
@@ -996,7 +1005,14 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     }
 
     bool anyDetections = !results.plates.empty();
-  if (trackingActive) {
+    bool plateFoundThisFrame = false;
+    if (!results.plates.empty()) {
+      for (const auto& plate : results.plates) {
+        if (!plate.bestPlate.characters.empty()) { plateFoundThisFrame = true; break; }
+      }
+    }
+    if (plateFoundThisFrame) platesFound++; else platesNone++;
+    if (trackingActive) {
       for (const auto& plate : results.plates) {
         Rect pr = plateRect(plate);
         Point c((pr.x+pr.width/2), (pr.y+pr.height/2));
@@ -1171,6 +1187,15 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     char key = (char)waitKey(1);
     if (key == 'q' || key == 27) break;
   }
+  auto wallClockEnd = std::chrono::system_clock::now();
+  double wallTimeSeconds = std::chrono::duration<double>(wallClockEnd - wallClockStart).count();
+  double fpsReport = (wallTimeSeconds > 0.0) ? (framesTotal / wallTimeSeconds) : 0.0;
+  cout << "[report]\n";
+  cout << "frames=" << framesTotal << "\n";
+  cout << "plates_found=" << platesFound << "\n";
+  cout << "plates_none=" << platesNone << "\n";
+  cout << "wall_time_s=" << wallTimeSeconds << "\n";
+  cout << "fps=" << fpsReport << "\n";
   if (logFile.good()) logFile.close();
   destroyWindow("alpr-tool preview");
 }
@@ -1283,11 +1308,16 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-plates",0)==0) { string v; eatValue(v); opts.logPlates = (v=="1"||v=="true"); continue; }
         if (a.rfind("--max-seconds",0)==0) { string v; eatValue(v); opts.maxSeconds = std::max(0, stoi(v)); continue; }
         if (a.rfind("--log-events",0)==0) { string v; eatValue(v); opts.logEvents = (v!="0"&&v!="false"); continue; }
+        if (a.rfind("--gate-after-crossing",0)==0) { string v; eatValue(v); opts.gateAfterCrossing = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--report-json",0)==0) { eatValue(opts.reportJsonPath); continue; }
+        if (a.rfind("--crossing-line-pct",0)==0) { string v; eatValue(v); opts.crossingLinePct = std::max(1.0, std::min(99.0, stod(v))); continue; }
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
         if (a=="-h"||a=="--help") {
-          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest] [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>] [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>]\n";
+          cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest]"
+               << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
+               << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]\n";
           return 0;
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
