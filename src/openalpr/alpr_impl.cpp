@@ -2,6 +2,7 @@
 
 #include "alpr_impl.h"
 #include "result_aggregator.h"
+#include "support/filesystem.h"
 
 
 void plateAnalysisThread(void* arg);
@@ -352,16 +353,27 @@ namespace alpr
     std::string vehicleProfile = decideVehicleProfile(warpedRegionsOfInterest);
     std::cout << "[vehicle] profile=" << vehicleProfile << std::endl;
 
-    if (vehicleProfile == "moto")
+    std::string regionDir = joinPath(config->getRuntimeBaseDir(), "region");
+    std::string br2Moto = joinPath(regionDir, "br2_moto.xml");
+    std::string brMoto = joinPath(regionDir, "br_moto.xml");
+    bool br2MotoExists = fileExists(br2Moto.c_str());
+    bool brMotoExists = fileExists(brMoto.c_str());
+    static bool motoWarned = false;
+
+    if (vehicleProfile == "moto" && (br2MotoExists || brMotoExists))
     {
-      // Moto path
-      attempts.push_back({"br2_moto", "", "br2_moto"});
-      attempts.push_back({"br_moto", "", "br_moto"});
+      if (br2MotoExists) attempts.push_back({"br2_moto", "", "br2_moto"});
+      if (brMotoExists) attempts.push_back({"br_moto", "", "br_moto"});
       attempts.push_back({"br2", "", "br2"});
       attempts.push_back({"br", "", "br"});
     }
     else
     {
+      if (vehicleProfile == "moto" && !(br2MotoExists || brMotoExists) && !motoWarned)
+      {
+        std::cout << "[warn] moto_cascade_assets_missing fallback=br2->br\n";
+        motoWarned = true;
+      }
       // Car path (existing order + optional eu/ad)
       for (size_t i = 0; i < config->brHybridOrder.size(); i++)
       {
