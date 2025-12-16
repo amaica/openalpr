@@ -5,20 +5,24 @@ import com.openalpr.jni.json.JSONException;
 import com.openalpr.jni.json.JSONObject;
 
 public class AlprCoordinate {
-    private final int x;
-    private final int y;
+    private final double x;
+    private final double y;
 
     AlprCoordinate(JSONObject coordinateObj) throws JSONException
     {
-        x = coordinateObj.getInt("x");
-        y = coordinateObj.getInt("y");
+        x = coordinateObj.getDouble("x");
+        y = coordinateObj.getDouble("y");
     }
 
-    public int getX() {
+    public double getX() {
         return x;
     }
 
-    public int getY() {
+    public double getY() {
         return y;
+    }
+
+    public Point2D toPoint() {
+        return new Point2D(x, y);
     }
 }
