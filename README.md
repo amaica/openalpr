@@ -1,246 +1,304 @@
 # OpenALPR 2025 — Brazil & Mercosur
-### Cars & Motorcycles • YOLOv8 • C++
+### Cars & Motorcycles • Profiles • Speed-First OCR • C++
 
-Modernized OpenALPR engine with native Brazil/Mercosur support, motorcycle OCR profiles, and YOLOv8 detection for server-side Linux deployments.
+A production-oriented evolution of the classic OpenALPR C/C++ stack focused on **Brazil/Mercosur**, **operational reliability**, and **measurable performance**. This repository keeps dependencies minimal (classic detector + Tesseract OCR), adds **profile-based OCR strategies** (including motorcycle-friendly behavior), and exposes **metrics** so improvements are driven by numbers—not guesses.
+
+> **No YOLO inside this library.** If you use YOLO/trackers, they live in the application layer and can feed bboxes into the ALPR pipeline via **skip-detection** scenarios.
 
 ---
 
 ## 🇺🇸 English
 
-## Overview
-Evolution of the classic OpenALPR engine. Keeps the OCR pipeline and adds modern detection, hybrid country handling, and process-based scalability.
+## What’s in here (2025-ready features)
 
-## Core Capabilities
+### 1) Profile tag (NEW)
+`alpr-tool preview` supports:
 
-<<<<<<< HEAD
-### Brazil & Mercosur (Native)
-- Old Brazilian plates: **LLLNNNN**
-- Mercosur plates: **LLLNLNN**
-- Native hybrid pipeline: **br2 → br**
-- Explicit, deterministic, and logged fallback rules
+- `--profile=default|moto|garagem`
 
-### Motorcycle Plates
-- YOLOv8 detection for moto plates
-- OCR profiles: `br_moto.conf`, `br2_moto.conf`
-- Vehicle-type selection: YOLO class or aspect ratio
+Profiles change the OCR strategy at runtime:
 
-### Detection
-- YOLOv8 ONNX, configurable model path
-- CPU/CUDA backend auto-selection, fallback to classic detector
+| Profile | Intent | Current behavior |
+|---|---|---|
+| `default` | cars / general | `ocr_burst_frames = 1` |
+| `moto` | motorcycles / small plates | `ocr_burst_frames = 6` + temporal voting |
+| `garagem` | garages / low-speed | `ocr_burst_frames = 10` + temporal voting |
 
-### Performance
-- Process-based parallelism
-- One YOLO + one ALPR per worker
-- Suitable for batch and video streams
+✅ Implemented in: `src/tools/alpr_tool.cpp`  
+✅ Commit: `feat(tool): add profile tag with burst OCR and temporal voting`
 
-## Architecture
+---
+
+### 2) Temporal voting (NEW)
+When `profile` is `moto` or `garagem`, the tool runs burst OCR and aggregates results via majority voting.
+
+Example log:
 ```
-Input (Image / Video Frame)
-        |
-        v
-+----------------------+
-|  YOLOv8 Detector    |
-| (car / motorcycle)  |
-+----------------------+
-        |
-        v
-+----------------------+
-| Vehicle Type Selector|
-+----------------------+
-        |
-        v
-+----------------------+
-| OCR Profile Selector |
-| br2 / br             |
-| br2_moto / br_moto   |
-+----------------------+
-        |
-        v
-+----------------------+
-| OpenALPR OCR Engine  |
-+----------------------+
-        |
-        v
-+----------------------+
-| Pattern Validation   |
-| + Explicit Fallback  |
-+----------------------+
-        |
-        v
-Output (CLI / JSON / API)
+[vote] profile=moto plate=ABC1D23 window=N
 ```
 
-## Configuration Example
-```ini
-detector_type = auto
-yolo_model_path = /etc/openalpr/models/yolov8n_plates.onnx
+---
 
-br_enable_hybrid = 1
-br_hybrid_order = br2,br
-br_hybrid_min_confidence = 80
+### 3) Report / Metrics (NEW)
+The preview report and its JSON now include:
 
-vehicle_profile_mode = auto
-moto_aspect_ratio_min = 0.6
-moto_aspect_ratio_max = 1.4
-```
+- `profile`
+- `ocr_burst_frames`
+- `votes_emitted`
+- `final_plate_count`
 
-## Build (from repo root)
+These are designed to make performance and quality comparable across runs.
+
+---
+
+### 4) Minimal-dependency core (Architectural decision)
+- Classic OpenALPR detector (no modern DNN detector embedded)
+- Tesseract-based OCR in the core (C++ integration)
+- **skip_detection** exists (off by default) for bbox-provided workflows
+
+---
+
+### 5) Java wrapper bounding boxes (NEW / Improved)
+Recent work improved Java-side usability for plate coordinates and added proof output.
+
+- “bbox proof” output exists in Java tests
+- More ergonomic API exposure for plate box retrieval
+
+(See latest Java commits in your repo history.)
+
+---
+
+## Quick start (CLI)
+
+### Build
 ```bash
-mkdir build
+mkdir -p build
 cd build
 cmake ..
-make -j$(nproc)
+make -j"$(nproc)"
 ```
 
-## Instalação automática (Linux Debian/Ubuntu)
-- Pré-requisitos: Linux Debian/Ubuntu com sudo
-- Comando único:
-  ```bash
-  sudo TEST_IMAGE=/caminho/para/imagem.jpg ./scripts/install.sh
-  ```
-- O script:
-  - Detecta a distro
-  - Instala dependências via apt (non-interactive)
-  - Configura e compila com CMake
-  - Instala os binários
-  - Executa smoke test com a imagem indicada
-- Variáveis de ambiente suportadas:
-  - `PREFIX` (padrão: /usr/local)
-  - `BUILD_DIR` (padrão: build)
-  - `JOBS` (padrão: nproc)
-  - `INSTALL_DEPS` (padrão: 1)
-  - `RUN_TESTS` (padrão: 1)
-  - `TEST_IMAGE` (obrigatória para o smoke test)
-
-### Interface de configuração
-Após instalar, use a interface visual via OpenCV HighGUI:
-```
-alpr-config roi
-alpr-config tune
-alpr-config preview
-```
-Isso abre a UI para desenhar ROI, ajustar preproc e fazer preview.
-
-### Plugin & OCR Configuration
-O arquivo de configuração suporta parâmetros opcionais para fallback de OCR e plugins (apenas leitura, sem execução de plugins por padrão):
-```
-ocr_primary = openalpr
-ocr_policy = primary_only
-ocr_min_confidence = 0
-ocr_fallback_enabled = 0
-ocr_fallback_plugin = deepseek
-ocr_fallback_min_confidence = 80
-ocr_fallback_timeout_ms = 800
-
-plugins_enabled = 0
-plugins_path = /opt/alpr/plugins
-
-vehicle_attrs_enabled = 0
-vehicle_attrs_plugin = onnx_vehicle
-vehicle_attrs_min_confidence = 0.7
-```
-Esses valores são lidos na inicialização e registrados em nível de debug. Nenhum plugin é carregado por padrão.
-
-#### Atalhos e UX (alpr-tool)
-- Abrir configurador com vídeo local: `alpr-tool roi --source /caminho/video.avi --conf /opt/alpr/openalpr.conf`
-- Inicia pausado; botões: [PLAY] [PAUSE] [STOP] [SAVE ROI] [RESET ROI] [QUIT]
-- Teclas: Space(play/pause), S(save), R(reset), Q/Esc(quit), 1(ROI default metade inferior)
-- ROI default automática: metade inferior (x=0,y=50%,w=100%,h=50%) se não houver ROI no conf
-
-#### Plate logging
-- Rodar a suíte automatizada:
-  ```bash
-  ./scripts/tests/plate_logs_suite.sh
-  ```
-  Gera logs em `artifacts/logs/<video>_plates.log` e resumo em `artifacts/reports/plate_logs_report.txt`.
-- Flags do preview:
-  - `--log-plates=1|0` (default 0)
-  - `--log-plates-every-n=<int>` (default 10)
-  - `--log-plates-file=<path>` (opcional; se vazio, cai no console)
-  - `--max-seconds=<int>` (0 = até o fim do vídeo)
-  Exemplo:
-  ```bash
-  ./build/src/alpr-tool preview \
-    --conf artifacts/config_video_test/openalpr.conf \
-    --source /path/to/video.avi \
-    --log-plates=1 \
-    --log-plates-every-n=10 \
-    --log-plates-file artifacts/logs/sample_plates.log
-  ```
-
-#### Detecção padrão e skip detection (opcional)
-- Por padrão, a biblioteca usa o detector clássico integrado (nenhum backend externo).
-- A chave `skip_detection` no `openalpr.conf` é **0** por padrão (detecção habilitada).
-- Para cenários onde as bounding boxes são fornecidas externamente, você pode ativar:
-  ```ini
-  skip_detection = 1
-  ```
-  e passar ROIs pela API para que apenas OCR/pipeline rodem sobre as regiões fornecidas (sem detector interno).
-  Use apenas quando sua aplicação já fornece bboxes confiáveis.
-
-## Testes (bateria automatizada)
+### Preview (fastest / default)
 ```bash
-TEST_IMAGE=/caminho/img.jpg ./scripts/tests/run_all.sh
+./build/src/alpr-tool preview \
+  --profile=default \
+  --country=br \
+  --source /path/to/video.mp4
 ```
 
-## Usage
+### Preview (motorcycle profile)
 ```bash
-alpr -c br car.jpg
-alpr -c br motorcycle.jpg
+./build/src/alpr-tool preview \
+  --profile=moto \
+  --country=br \
+  --source /path/to/video.mp4
 ```
+
+### Preview (garage profile, more aggressive)
+```bash
+./build/src/alpr-tool preview \
+  --profile=garagem \
+  --country=br \
+  --source /path/to/video.mp4
+```
+
+---
+
+## Performance recipes (practical and measurable)
+
+### Recipe A — Use profiles (cheapest win)
+Run the same input with different profiles and compare:
+- `votes_emitted`
+- `final_plate_count`
+- wall-clock time of the run
+- your existing `[report]` fields (fps, plates_found, plates_none, etc.)
+
+### Recipe B — ROI/cropping in your app (biggest speed lever)
+Even without any new detectors, **cropping** is the main way to reduce OCR cost:
+- crop to the lane/line region before calling OCR
+- keep pixel density high enough for plates (especially motorcycles)
+
+### Recipe C — External detector (YOLO) + skip_detection (best control)
+If your application uses YOLO/tracking:
+- detect plate bbox externally
+- pass bbox/crops into ALPR (OCR only)
+- enable motorcycle/garage behavior using `profile` and temporal voting
+
+This gives you:
+- deterministic “only OCR when needed”
+- stable output via voting
+- minimal work inside the ALPR library
+
+---
+
+## Configuration notes
+
+### skip_detection (optional)
+`skip_detection` is off by default. Enable only when your application provides bboxes reliably:
+
+```ini
+skip_detection = 1
+```
+
+Use-case:
+- YOLO detects the plate bbox
+- you crop to that bbox and run OCR pipeline only
+
+---
+
+## Repository hot paths (most relevant files)
+
+- Tool:
+  - `src/tools/alpr_tool.cpp` — preview, profiles, voting, report fields
+
+- OCR:
+  - `src/openalpr/ocr/tesseract_ocr.cpp`
+  - `src/openalpr/ocr/tesseract_ocr.h`
+  - `src/openalpr/ocr/ocrfactory.cpp`
+  - `src/openalpr/ocr/ocr.h`
+
+- Build:
+  - `src/cmake_modules/FindTesseract.cmake`
+  - `src/openalpr/CMakeLists.txt`
+  - `src/CMakeLists.txt`
+
+---
+
+## Roadmap (near-term, aligned to current direction)
+- Move profile behavior deeper into the core (true multi-pass OCR per profile)
+- Provide a first-class API for bbox input (OCR-only) for Python/Java wrappers
+- Add automated “proof” command producing artifacts that demonstrate:
+  - runtime assets ok
+  - gating/voting behavior
+  - measurable performance diffs by profile
+
+---
 
 ## Disclaimer
-This project is open source and **not officially affiliated** with OpenALPR Inc.
+This project is open source and not officially affiliated with OpenALPR Inc.
 
 ---
 
 ## 🇧🇷 Português
 
-## Visão Geral
-Este projeto é uma **evolução arquitetural de nível produção** do OpenALPR clássico.  
-Ele **mantém o pipeline de OCR consolidado** e substitui os componentes obsoletos por uma **arquitetura moderna, configurável e robusta**.
+## O que existe hoje (recente / 2025)
 
-## Capacidades Principais
+### 1) Tag de profile (NOVO)
+O `alpr-tool preview` suporta:
 
-### Brasil e Mercosul (Nativo)
-- Placas antigas: **LLLNNNN**
-- Placas Mercosul: **LLLNLNN**
-- Pipeline híbrido explícito: **br2 → br**
-- Fallback determinístico e logado
+- `--profile=default|moto|garagem`
 
-### Placas de Moto (Suporte Real)
-- Detecção confiável com YOLOv8
-- Perfis OCR dedicados:
-  - `br_moto.conf`
-  - `br2_moto.conf`
-- Seleção automática por:
-  - classe do YOLO (`plate_car` / `plate_moto`)
-  - proporção da bounding box (fallback)
-- Validação de 7 caracteres com layout ajustado
+Profiles controlam a estratégia de OCR:
 
-### Detecção Moderna
-- YOLOv8 em **ONNX**
-- Modelo carregado via configuração
-- Sem recompilação para atualizar modelos
-- Seleção automática de backend (CPU / CUDA)
-- Fallback seguro para detector clássico
+| Profile | Cenário | Comportamento atual |
+|---|---|---|
+| `default` | carro / geral | `ocr_burst_frames = 1` |
+| `moto` | moto / placa pequena | `ocr_burst_frames = 6` + voto temporal |
+| `garagem` | garagem / baixa velocidade | `ocr_burst_frames = 10` + voto temporal |
 
-### Performance e Escalabilidade
-- Paralelismo por processos
-- Um YOLO + um ALPR por worker
-- Escala linear com CPU/GPU
-- Sem estado compartilhado
+✅ Implementado em: `src/tools/alpr_tool.cpp`  
+✅ Commit: `feat(tool): add profile tag with burst OCR and temporal voting`
 
-## Build e Uso
-```bash
-mkdir build
-cd build
-cmake ..
-make -j$(nproc)
+---
 
-alpr -c br carro.jpg
-alpr -c br moto.jpg
+### 2) Voto temporal (NOVO)
+Para `moto` e `garagem`, o tool faz burst OCR e aplica majority vote.
+
+Log:
+```
+[vote] profile=moto plate=ABC1D23 window=N
 ```
 
+---
+
+### 3) Métricas/Relatório (NOVO)
+O report/JSON inclui:
+- `profile`
+- `ocr_burst_frames`
+- `votes_emitted`
+- `final_plate_count`
+
+Isso permite comparar perfis por números.
+
+---
+
+### 4) Core com dependências mínimas (decisão fechada)
+- Detector clássico OpenALPR
+- OCR via Tesseract no core (C++)
+- `skip_detection` existe (desligado por padrão) para cenários com bbox externa
+
+---
+
+### 5) Wrapper Java (coordenadas/bbox)
+Melhorias recentes:
+- API mais ergonômica para bounding box
+- “bbox proof” em testes
+
+---
+
+## Como usar (CLI)
+
+### Build
+```bash
+mkdir -p build
+cd build
+cmake ..
+make -j"$(nproc)"
+```
+
+### Preview (mais rápido)
+```bash
+./build/src/alpr-tool preview --profile=default --country=br --source /path/to/video.mp4
+```
+
+### Preview (moto)
+```bash
+./build/src/alpr-tool preview --profile=moto --country=br --source /path/to/video.mp4
+```
+
+### Preview (garagem)
+```bash
+./build/src/alpr-tool preview --profile=garagem --country=br --source /path/to/video.mp4
+```
+
+---
+
+## Receitas de velocidade (sem achismo)
+
+### Receita A — Comparar perfis
+Use o mesmo vídeo e compare `default` vs `moto` vs `garagem` usando:
+- `votes_emitted`
+- `final_plate_count`
+- tempo total de execução
+- FPS e contadores do `[report]`
+
+### Receita B — Crop/ROI na aplicação (maior ganho)
+O maior ganho vem de **reduzir área** antes do OCR:
+- recortar a região da pista/linha
+- manter densidade de pixels (principalmente para moto)
+
+### Receita C — YOLO fora + skip_detection (melhor controle)
+Se você já usa YOLO/tracker:
+- detecte bbox externamente
+- use `skip_detection` e rode só OCR
+- use `profile=moto` / `garagem` para burst+voto quando necessário
+
+---
+
+## skip_detection (opcional)
+```ini
+skip_detection = 1
+```
+Use apenas quando sua aplicação fornece bboxes confiáveis.
+
+---
+
+## Arquivos principais
+- `src/tools/alpr_tool.cpp` — profiles, voto, métricas
+- `src/openalpr/ocr/*` — Tesseract OCR core
+- `src/cmake_modules/FindTesseract.cmake` — find/link Tesseract/Leptonica
+
+---
+
 ## Aviso Legal
-Projeto open source, **sem afiliação oficial** com a OpenALPR Inc.
+Projeto open source, sem afiliação oficial com OpenALPR Inc.

@@ -29,6 +29,8 @@ using namespace std;
 using namespace cv;
 using namespace alpr;
 
+static int cmdOcrProof(const std::string& source, const std::string& confPath);
+
 struct ConfigWriter {
   string path;
   vector<string> lines;
@@ -367,12 +369,15 @@ struct RuntimeResolveResult {
   std::vector<std::string> tested;
   bool preferredInvalid=false;
   std::string preferredReason;
+  std::string source; // preferred|env|system|cwd|repo
 };
 
 struct DoctorResult {
   bool ok=false;
   std::string confPath;
   std::string runtimePath;
+  std::string regionCascadePath;
+  bool cascadeLoaded=false;
 };
 
 static bool g_selfTestRan = false;
@@ -1026,6 +1031,11 @@ static DoctorResult runDoctor(const std::string& country, const std::string& out
   return dr;
 }
 
+static bool cascadeLoadablePath(const std::string& fullpath) {
+  cv::CascadeClassifier c;
+  return c.load(fullpath);
+}
+
 static RuntimeResolveResult resolveRuntimeData(const std::string& country, const std::string& preferred) {
   RuntimeResolveResult rr;
   std::vector<std::string> candidates;
@@ -1042,9 +1052,8 @@ static RuntimeResolveResult resolveRuntimeData(const std::string& country, const
   pushIfUnique("/usr/local/share/openalpr/runtime_data");
   pushIfUnique("./runtime_data");
   pushIfUnique(joinPath(cwdPath(), "runtime_data"));
-  // try repo root heuristic: if we are inside build/* go up one
-  std::string up = joinPath(cwdPath(), "../runtime_data");
-  pushIfUnique(up);
+  // repo root heuristic: if we are inside build/* go up one
+  pushIfUnique(joinPath(cwdPath(), "../runtime_data"));
 
   bool firstTried = true;
   for (const auto& base : candidates) {
@@ -1054,9 +1063,15 @@ static RuntimeResolveResult resolveRuntimeData(const std::string& country, const
     if (!DirectoryExists(base.c_str())) { rr.reason = "runtime_data path missing"; goto next; }
     if (!DirectoryExists(regionDir.c_str())) { rr.reason = "region dir missing"; goto next; }
     if (!fileExists(cascade.c_str())) { rr.reason = "cascade file missing: " + cascade; goto next; }
-    if (!cascadeLoadable(cascade)) { rr.reason = "cascade not loadable: " + cascade; goto next; }
+    if (!cascadeLoadablePath(cascade)) { rr.reason = "cascade not loadable: " + cascade; goto next; }
     rr.ok = true;
     rr.path = base;
+    if (firstTried && hasPreferred) rr.source = "preferred";
+    else if (!preferred.empty() && base == preferred) rr.source = "preferred";
+    else if (envRt && base == std::string(envRt)) rr.source = "env";
+    else if (base == "/usr/share/openalpr/runtime_data" || base == "/usr/local/share/openalpr/runtime_data") rr.source = "system";
+    else if (base == "./runtime_data" || base == joinPath(cwdPath(), "runtime_data")) rr.source = "cwd";
+    else rr.source = "repo";
     return rr;
 next:
     if (firstTried && hasPreferred) {
@@ -1103,7 +1118,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   }
   cout << "[config] conf_path=" << confPath << "\n";
   std::string runtimePreferred = runtimePreferredOverride.empty() ? cfg.get("runtime_dir","") : runtimePreferredOverride;
-  cout << "[config] runtime_data_path=" << runtimePreferred << "\n";
+  cout << "[config] runtime_data_preferred=" << runtimePreferred << "\n";
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
@@ -1120,7 +1135,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   if (opts.ocrMinVotes <= 0) opts.ocrMinVotes = 1;
   RuntimeResolveResult rt = resolveRuntimeData(country, runtimePreferred);
   if (rt.preferredInvalid) {
-    cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
+    cerr << "[warn] runtime_data_rejected=" << runtimePreferred
+         << " country=" << country
+         << " reason=" << rt.preferredReason
+         << "; trying fallbacks...\n";
   }
   if (!rt.ok) {
     cerr << "[error] Could not resolve runtime_data for country=" << country << endl;
@@ -1133,8 +1151,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     cerr << "\nPlease install openalpr runtime_data or point --conf runtime_dir to a valid path containing region/*.xml and ocr/.\n";
     return;
   }
-  cout << "[config] runtime_data_path_resolved=" << rt.path << " (auto selected)\n";
-  cout << "[config] runtime_data_path_resolved=" << rt.path << " (auto selected)\n";
+  cout << "[config] runtime_data_path_resolved=" << rt.path
+       << " (from=" << (rt.source.empty() ? "auto" : rt.source) << ")\n";
   VideoCapture cap;
   if (!openCapture(src, cap)) {
     cerr << "Could not open source: " << src << endl;
@@ -2082,6 +2100,17 @@ int main(int argc, char** argv) {
       cmdExportYolo(modelArg.getValue(), outArg.getValue(), imgszArg.getValue(), confArg.getValue(), updateArg.getValue());
       return 0;
     }
+  } catch (TCLAP::ArgException& e) {
+    cerr << "Error: " << e.error() << " for arg " << e.argId() << endl;
+    return 1;
+  } catch (const std::exception& e) {
+    cerr << "Error: " << e.what() << endl;
+    return 1;
+  }
+
+  cerr << "Unknown subcommand: " << sub << endl;
+  return 1;
+}
 
 static int cmdOcrProof(const std::string& source, const std::string& confPath) {
   if (source.empty()) {
@@ -2168,16 +2197,5 @@ static int cmdOcrProof(const std::string& source, const std::string& confPath) {
   out << "  ]\n}\n";
   std::cout << "Proof written to artifacts/proof/ocr_profile_proof.json\n";
   return 0;
-}
-  } catch (TCLAP::ArgException& e) {
-    cerr << "Error: " << e.error() << " for arg " << e.argId() << endl;
-    return 1;
-  } catch (const std::exception& e) {
-    cerr << "Error: " << e.what() << endl;
-    return 1;
-  }
-
-  cerr << "Unknown subcommand: " << sub << endl;
-  return 1;
 }
 
