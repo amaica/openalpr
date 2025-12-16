@@ -21,9 +21,12 @@ TEST_IMAGE="${TEST_IMAGE:-}"
 [[ -n "${TEST_IMAGE}" ]] || die "TEST_IMAGE is required (path to an image for smoke test)"
 [[ -f "${TEST_IMAGE}" ]] || die "TEST_IMAGE not found: ${TEST_IMAGE}"
 
-YOLO_PT="${YOLO_PT:-/home/aurelio/FONTES/python/SynkiSentinel/models/plates/yolov8n_plates.pt}"
-[[ -f "${YOLO_PT}" ]] || die "YOLO_PT not found: ${YOLO_PT}"
-
+# YOLO model is optional; use provided env or a model placed under artifacts/models
+YOLO_PT_DEFAULT=""
+if [[ -f "${MODEL_DIR}/yolov8n_plates.pt" ]]; then
+  YOLO_PT_DEFAULT="${MODEL_DIR}/yolov8n_plates.pt"
+fi
+YOLO_PT="${YOLO_PT:-${YOLO_PT_DEFAULT}}"
 YOLO_ONNX_OUT="${YOLO_ONNX_OUT:-${MODEL_DIR}/yolo_plates.onnx}"
 UPDATE_CONF="${UPDATE_CONF:-0}"
 PREFIX="${PREFIX:-/usr/local}"
@@ -82,13 +85,20 @@ else
 fi
 [[ -n "${CONFIG_FILE}" ]] || die "No config file found (set CONFIG_DIR or ensure config/openalpr.conf.defaults exists)"
 
-log "Using YOLO_PT=${YOLO_PT}"
+log "Using YOLO_PT=${YOLO_PT:-<unset>}"
 log "ONNX output will be ${YOLO_ONNX_OUT}"
 log "UPDATE_CONF=${UPDATE_CONF}"
 log "CONFIG_FILE=${CONFIG_FILE}"
 
-run_step "export_yolo" "${LOG_DIR}/export_yolo.log" \
-  "python3 \"${SCRIPT_DIR}/export_yolo.py\" --pt \"${YOLO_PT}\" --out \"${YOLO_ONNX_OUT}\""
+if [[ -z "${YOLO_PT}" ]]; then
+  record "SKIP" "export_yolo" "YOLO_PT not set and no default model in artifacts/models"
+else
+  if [[ ! -f "${YOLO_PT}" ]]; then
+    die "YOLO_PT not found: ${YOLO_PT}"
+  fi
+  run_step "export_yolo" "${LOG_DIR}/export_yolo.log" \
+    "python3 \"${SCRIPT_DIR}/export_yolo.py\" --pt \"${YOLO_PT}\" --out \"${YOLO_ONNX_OUT}\""
+fi
 
 if [[ "${UPDATE_CONF}" == "1" ]]; then
   if [[ -z "${CONFIG_DIR}" ]]; then
