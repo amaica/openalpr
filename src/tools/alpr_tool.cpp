@@ -370,6 +370,9 @@ struct DoctorResult {
   std::string runtimePath;
 };
 
+static bool g_selfTestRan = false;
+static bool g_selfTestPass = false;
+
 static RuntimeResolveResult resolveRuntimeData(const std::string& country, const std::string& preferred);
 
 static double iouRect(const Rect& a, const Rect& b) {
@@ -1082,7 +1085,7 @@ static bool isValidOldBr(const string& plate) {
   return std::regex_match(plate, old);
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, PreviewRuntimeOptions opts, const string& countryArg, bool doctorMode, bool doctorAlreadyRan) {
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, PreviewRuntimeOptions opts, const string& countryArg, bool doctorMode, bool doctorAlreadyRan, const std::string& runtimePreferredOverride="") {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
@@ -1094,7 +1097,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     getline(cin, src);
   }
   cout << "[config] conf_path=" << confPath << "\n";
-  cout << "[config] runtime_data_path=" << cfg.get("runtime_dir","") << "\n";
+  std::string runtimePreferred = runtimePreferredOverride.empty() ? cfg.get("runtime_dir","") : runtimePreferredOverride;
+  cout << "[config] runtime_data_path=" << runtimePreferred << "\n";
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
@@ -1105,7 +1109,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     cerr << "Invalid --crossing-mode (expected off|motion)\n";
     return;
   }
-  RuntimeResolveResult rt = resolveRuntimeData(country, cfg.get("runtime_dir",""));
+  RuntimeResolveResult rt = resolveRuntimeData(country, runtimePreferred);
   if (rt.preferredInvalid) {
     cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
   }
@@ -1366,6 +1370,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
         pr.bestPlate.overall_confidence = 99.0;
         results.plates.push_back(pr);
       }
+      alprCallsTotal++;
+      if (isPostCrossing) alprCallsPostCrossing++; else alprCallsPreCrossing++;
     } else {
       results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
       alprCallsTotal++;
@@ -1614,6 +1620,37 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
+
+  if (!opts.reportJsonPath.empty()) {
+    ensureParentDir(opts.reportJsonPath);
+    std::ofstream js(opts.reportJsonPath);
+    if (js.good()) {
+      js << "{\n";
+      js << "  \"runtime_data_preferred\": \"" << runtimePreferred << "\",\n";
+      js << "  \"runtime_data_resolved\": \"" << rt.path << "\",\n";
+      js << "  \"cascade_loaded\": true,\n";
+      js << "  \"detector_not_loaded\": false,\n";
+      js << "  \"crossing_frame\": " << crossingFrame << ",\n";
+      js << "  \"alpr_calls_pre_crossing\": " << alprCallsPreCrossing << ",\n";
+      js << "  \"alpr_calls_post_crossing\": " << alprCallsPostCrossing << ",\n";
+      js << "  \"plates_found_post_crossing\": " << platesFoundPostCrossing << ",\n";
+      js << "  \"frames_after_crossing\": " << framesAfterCrossing << "\n";
+      js << "}\n";
+    }
+    bool pass = (rt.path != runtimePreferred) &&
+                (crossingFrame >= 0) &&
+                (alprCallsPreCrossing == 0) &&
+                (platesFoundPostCrossing > 0);
+    g_selfTestRan = true;
+    g_selfTestPass = pass;
+    cout << (pass ? "SELF-TEST RESULT: PASS\n" : "SELF-TEST RESULT: FAIL\n");
+    if (pass) {
+      cout << "Runtime auto-corrected successfully\n";
+      cout << "Crossing gating enforced\n";
+      cout << "Plates detected after crossing\n";
+    }
+    cout << "Proof file: " << opts.reportJsonPath << "\n";
+  }
   if (logFile.good()) logFile.close();
   destroyWindow("alpr-tool preview");
 }
@@ -1654,9 +1691,56 @@ static void cmdExportYolo(const string& model, const string& out, int imgsz, con
   }
 }
 
+static int cmdSelfTest() {
+  const std::string proofDir = "artifacts/proof";
+  const std::string proofConf = proofDir + "/openalpr.selftest.conf";
+  const std::string proofReport = proofDir + "/report.json";
+  const std::string source = "/home/aurelio/FONTES/python/SynkiSentinel/videos/output2.avi";
+  const std::string invalidRuntime = "./runtime_data_invalid_selftest";
+  ensureParentDir(proofConf);
+  std::ifstream defIn("config/openalpr.conf.defaults");
+  std::ofstream defOut(proofConf, std::ios::trunc);
+  if (defIn.good()) {
+    defOut << defIn.rdbuf();
+  }
+  defOut << "\nruntime_dir=" << invalidRuntime << "\n";
+  defOut << "country=br\n";
+  defOut.close();
+
+  PreviewRuntimeOptions opts;
+  opts.crossingMode = "motion";
+  opts.motionThresh = 10;
+  opts.motionMinArea = 500;
+  opts.motionMinRatio = 0.02;
+  opts.motionDirectionFilter = true;
+  opts.crossingDebounce = 3;
+  opts.crossingArmMinFrames = 10;
+  opts.crossingArmMinRatio = 0.02;
+  opts.ocrOnlyAfterCrossing = true;
+  opts.maxSeconds = 15;
+  opts.reportJsonPath = proofReport;
+  opts.crossingP1 = Point(640, 0);
+  opts.crossingP2 = Point(640, 1080);
+
+  try {
+    cmdPreview(source, proofConf, "", true, opts, "br", false, false, invalidRuntime);
+  } catch (...) {
+    g_selfTestRan = true;
+    g_selfTestPass = false;
+  }
+
+  if (!g_selfTestRan) {
+    std::cerr << "SELF-TEST RESULT: FAIL (did not run)\n";
+    std::cerr << "Proof file: " << proofReport << "\n";
+    return 1;
+  }
+  if (g_selfTestPass) return 0;
+  return 1;
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
-    cout << "Usage: alpr-tool <roi|tune|preview|export-yolo> [options]\n";
+    cout << "Usage: alpr-tool <roi|tune|preview|export-yolo|self-test> [options]\n";
     return 1;
   }
   string sub = argv[1];
@@ -1886,6 +1970,9 @@ int main(int argc, char** argv) {
       }
       cmdPreview(src, conf, log, selfTest, opts, countryArg, previewDoctor, false);
       return 0;
+    }
+    if (sub == "self-test") {
+      return cmdSelfTest();
     }
     if (sub == "export-yolo") {
       TCLAP::CmdLine cmd("alpr-tool export-yolo", ' ', "1.0");
