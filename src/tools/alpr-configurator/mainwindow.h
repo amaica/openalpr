@@ -53,10 +53,11 @@ private slots:
 private:
   void buildMenus();
   void buildToolBar();
-  void buildStatusBar();
   void buildDocks();
+  void createCentralPreview();
+  void createTabsConfigPanel();
+  void buildStatusBar();
   void applyDarkTheme();
-
   void refreshSourceList();
   void loadSourceIntoUi(int index);
   void persistCurrentSource();

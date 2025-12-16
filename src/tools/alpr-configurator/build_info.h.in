@@ -1,0 +1,7 @@
+#pragma once
+
+#define ALPR_GIT_HASH "@ALPR_GIT_HASH@"
+#define ALPR_BUILD_TIME "@ALPR_BUILD_TIME@"
+#define ALPR_BUILD_TYPE "@ALPR_BUILD_TYPE@"
+
+
