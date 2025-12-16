@@ -364,6 +364,14 @@ struct RuntimeResolveResult {
   std::string preferredReason;
 };
 
+struct DoctorResult {
+  bool ok=false;
+  std::string confPath;
+  std::string runtimePath;
+};
+
+static RuntimeResolveResult resolveRuntimeData(const std::string& country, const std::string& preferred);
+
 static double iouRect(const Rect& a, const Rect& b) {
   int x1 = std::max(a.x, b.x);
   int y1 = std::max(a.y, b.y);
@@ -933,6 +941,83 @@ static bool writePerformanceConfig(const std::string& path, const std::string& r
   return true;
 }
 
+static DoctorResult runDoctor(const std::string& country, const std::string& outDir) {
+  DoctorResult dr;
+  RuntimeResolveResult rt = resolveRuntimeData(country, "");
+  if (rt.preferredInvalid) {
+    std::cerr << "[warn] runtime_data from config invalid for country=" << country << ": " << rt.preferredReason << "; trying fallbacks...\n";
+  }
+  if (!rt.ok) {
+    std::cerr << "[error] Could not resolve runtime_data for country=" << country << std::endl;
+    if (!rt.reason.empty()) std::cerr << " reason: " << rt.reason << std::endl;
+    std::cerr << " tried: ";
+    for (size_t i=0;i<rt.tested.size();i++) {
+      if (i>0) std::cerr << ", ";
+      std::cerr << rt.tested[i];
+    }
+    std::cerr << "\nPlease install openalpr runtime_data containing region/*.xml and ocr/.\n";
+    return dr;
+  }
+  ensureDir(outDir);
+  ensureDir("artifacts");
+  ensureDir("artifacts/logs");
+  std::string baseCountryCfg = outDir + "/openalpr." + country + ".conf";
+  std::string baseDefaultCfg = outDir + "/openalpr.default.conf";
+  std::string basePerfCfg = outDir + "/openalpr.performance.conf";
+  if (!writeConfigFile(baseCountryCfg, rt.path, country)) {
+    std::cerr << "[error] Failed to write config " << baseCountryCfg << std::endl;
+    return dr;
+  }
+  if (!writeConfigFile(baseDefaultCfg, rt.path, country)) {
+    std::cerr << "[error] Failed to write config " << baseDefaultCfg << std::endl;
+    return dr;
+  }
+  if (!writePerformanceConfig(basePerfCfg, rt.path, country)) {
+    std::cerr << "[error] Failed to write config " << basePerfCfg << std::endl;
+    return dr;
+  }
+  // optional br2
+  std::string br2Cascade = joinPath(joinPath(rt.path, "region"), "br2.xml");
+  if (fileExists(br2Cascade.c_str())) {
+    std::string br2Cfg = outDir + "/openalpr.br2.conf";
+    if (!writeConfigFile(br2Cfg, rt.path, "br2")) {
+      std::cerr << "[error] Failed to write config " << br2Cfg << std::endl;
+      return dr;
+    }
+  }
+  // list available countries (first 20)
+  std::vector<std::string> regionFiles = getFilesInDir((rt.path + "/region").c_str());
+  size_t total = regionFiles.size();
+  std::cout << "[doctor] available countries (first 20): ";
+  for (size_t i=0;i<regionFiles.size() && i<20;i++) {
+    if (i>0) std::cout << ", ";
+    std::string f = regionFiles[i];
+    if (f.find(".xml") != std::string::npos) f = f.substr(0, f.find(".xml"));
+    std::cout << f;
+  }
+  if (total > 20) std::cout << " ... (" << total << " total)";
+  std::cout << std::endl;
+  bool countryAvailable = false;
+  for (const auto& f : regionFiles) {
+    if (f.find(country + ".xml") != std::string::npos) { countryAvailable = true; break; }
+  }
+  if (!countryAvailable && !regionFiles.empty()) {
+    std::string suggestion = regionFiles[0];
+    if (suggestion.find(".xml") != std::string::npos) suggestion = suggestion.substr(0, suggestion.find(".xml"));
+    std::cerr << "[warn] requested country '" << country << "' not found; try --country " << suggestion << std::endl;
+    return dr;
+  }
+  dr.ok = true;
+  dr.runtimePath = rt.path;
+  if (countryAvailable && fileExists(baseCountryCfg.c_str()))
+    dr.confPath = baseCountryCfg;
+  else
+    dr.confPath = baseDefaultCfg;
+  std::cout << "[doctor] configs written to " << outDir << std::endl;
+  std::cout << "[doctor] runtime_data_path_resolved=" << rt.path << " (auto selected)" << std::endl;
+  return dr;
+}
+
 static RuntimeResolveResult resolveRuntimeData(const std::string& country, const std::string& preferred) {
   RuntimeResolveResult rr;
   std::vector<std::string> candidates;
@@ -997,7 +1082,7 @@ static bool isValidOldBr(const string& plate) {
   return std::regex_match(plate, old);
 }
 
-static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, PreviewRuntimeOptions opts, const string& countryArg) {
+static void cmdPreview(const string& source, const string& confPath, const string& logPath, bool selfTest, PreviewRuntimeOptions opts, const string& countryArg, bool doctorMode, bool doctorAlreadyRan) {
   ConfigWriter cfg;
   cfg.load(confPath);
   SpeedConfig speedCfg = loadSpeedConfig(cfg);
@@ -1045,6 +1130,18 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   Alpr alpr(country, confPath, rt.path);
   if (!alpr.isLoaded()) {
     cerr << "Could not load ALPR with config: " << confPath << endl;
+    if (doctorMode && !doctorAlreadyRan) {
+      cerr << "[doctor] detector not loaded, running auto-setup...\n";
+      DoctorResult dr = runDoctor(country, "artifacts/configs");
+      if (!dr.ok) {
+        cerr << "[doctor] auto-setup failed; aborting.\n";
+        return;
+      }
+      std::string newConf = dr.confPath.empty() ? confPath : dr.confPath;
+      cout << "[doctor] using generated config: " << newConf << "\n";
+      cmdPreview(source, newConf, logPath, selfTest, opts, countryArg, doctorMode, true);
+      return;
+    }
     return;
   }
   if (alpr.getConfig()) {
@@ -1690,6 +1787,7 @@ int main(int argc, char** argv) {
       bool selfTest = false;
       PreviewRuntimeOptions opts;
       string countryArg;
+      bool previewDoctor=false;
       for (size_t i=0;i<subArgs.size();++i) {
         string a = subArgs[i];
         auto eatValue = [&](string& target){
@@ -1702,6 +1800,7 @@ int main(int argc, char** argv) {
         if (a.rfind("--log-file",0)==0) { eatValue(log); continue; }
         if (a.rfind("--speed-selftest",0)==0) { selfTest = true; continue; }
         if (a.rfind("--country",0)==0) { eatValue(countryArg); continue; }
+        if (a.rfind("--doctor",0)==0) { previewDoctor = true; continue; }
         if (a.rfind("--crossing-mode",0)==0) { eatValue(opts.crossingMode); continue; }
         if (a.rfind("--crossing-roi",0)==0) {
           string v; eatValue(v);
@@ -1767,7 +1866,7 @@ int main(int argc, char** argv) {
           cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest]"
                << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
                << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]"
-               << " [--ocr-only-after-crossing 0|1] [--log-ocr-metrics 0|1]"
+               << " [--ocr-only-after-crossing 0|1] [--log-ocr-metrics 0|1] [--doctor]"
                << " [--crossing-mode off|motion] [--crossing-roi x,y,w,h] [--alpr-roi x,y,w,h] [--line x1,y1,x2,y2]"
                << " [--motion-thresh N] [--motion-min-area N] [--motion-min-ratio R] [--motion-direction-filter 0|1]"
                << " [--crossing-debounce N] [--crossing-arm-min-frames N] [--crossing-arm-min-ratio R]"
@@ -1776,7 +1875,7 @@ int main(int argc, char** argv) {
         }
         throw std::runtime_error(string("Unknown arg: ")+a);
       }
-      cmdPreview(src, conf, log, selfTest, opts, countryArg);
+      cmdPreview(src, conf, log, selfTest, opts, countryArg, previewDoctor, false);
       return 0;
     }
     if (sub == "export-yolo") {
