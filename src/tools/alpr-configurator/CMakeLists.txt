@@ -11,6 +11,7 @@ set(CMAKE_AUTOUIC ON)
 add_executable(alpr-configurator
   main.cpp
   configmodel.cpp
+  projectmodel.cpp
   mainwindow.cpp
 )
 
