@@ -207,6 +207,8 @@ namespace alpr
       std::string getCascadeRuntimeDir();
       std::string getPostProcessRuntimeDir();
       std::string getTessdataPrefix();
+      std::string getRuntimeBaseDir() const { return runtimeBaseDir; }
+      bool runtimeResolvedAuto=false;
 
       std::string runtimeBaseDir;
 

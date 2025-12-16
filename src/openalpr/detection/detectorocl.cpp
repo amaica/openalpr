@@ -102,8 +102,21 @@ namespace alpr
   vector<Rect> DetectorOCL::find_plates(Mat orig_frame, cv::Size min_plate_size, cv::Size max_plate_size)
   {
 
+    static bool cascadeLogged = false;
 
     vector<Rect> plates;
+
+    if (!loaded || plate_cascade.empty())
+    {
+      if (!cascadeLogged)
+      {
+        std::cerr << "[error] detector_not_loaded runtime_data=" << config->getRuntimeBaseDir()
+                  << " country=" << config->country
+                  << " expected_cascade=" << get_detector_file() << std::endl;
+        cascadeLogged = true;
+      }
+      return plates;
+    }
 
     //-- Detect plates
     timespec startTime;

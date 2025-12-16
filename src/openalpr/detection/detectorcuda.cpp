@@ -54,9 +54,28 @@ namespace alpr
 
   vector<Rect> DetectorCUDA::find_plates(Mat frame, cv::Size min_plate_size, cv::Size max_plate_size)
   {
+    static bool cascadeLogged = false;
     //-- Detect plates
     vector<Rect> plates;
     
+    bool cascadeReady = false;
+#if OPENCV_MAJOR_VERSION == 2
+    cascadeReady = loaded && !cuda_cascade.empty();
+#else
+    cascadeReady = loaded && cuda_cascade && !cuda_cascade->empty();
+#endif
+    if (!cascadeReady)
+    {
+      if (!cascadeLogged)
+      {
+        std::cerr << "[error] detector_not_loaded runtime_data=" << config->getRuntimeBaseDir()
+                  << " country=" << config->country
+                  << " expected_cascade=" << get_detector_file() << std::endl;
+        cascadeLogged = true;
+      }
+      return plates;
+    }
+
     timespec startTime;
     getTimeMonotonic(&startTime);
 
