@@ -290,6 +290,14 @@ namespace alpr
     analysis_count = getInt(ini, defaultIni, "", "analysis_count", 1);
     
     prewarp = getString(ini, defaultIni, "", "prewarp", "");
+
+    profile = getString(ini, defaultIni, "", "profile", "default");
+    std::transform(profile.begin(), profile.end(), profile.begin(), ::tolower);
+    if (profile != "default" && profile != "moto" && profile != "garagem") {
+      std::cerr << "[config][warn] invalid profile=" << profile << ", using default" << std::endl;
+      profile = "default";
+    }
+    std::cout << "[config] profile=" << profile << std::endl;
             
     maxPlateAngleDegrees = getInt(ini, defaultIni, "", "max_plate_angle_degrees", 15);
 

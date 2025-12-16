@@ -172,6 +172,8 @@ namespace alpr
       float roiWidth;
       float roiHeight;
 
+      std::string profile; // default | moto | garagem
+
       // Lightweight preprocessing (disabled by default)
       bool preprocEnable;
       float preprocBrightness;
