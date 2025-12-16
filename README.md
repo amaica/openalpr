@@ -18,12 +18,6 @@ Evolution of the classic OpenALPR engine. Keeps the OCR pipeline and adds modern
 - Mercosur plates: **LLLNLNN**
 - Native hybrid pipeline: **br2 → br**
 - Explicit, deterministic, and logged fallback rules
-=======
-### Brazil & Mercosur
-- Old Brazilian plates: LLLNNNN
-- Mercosur plates: LLLNLNN
-- Hybrid pipeline: br2 → br, logged fallback, no eu/ad dependency
->>>>>>> 4ffc6cc (docs(readme): normalize tone to technical C/C++ system style)
 
 ### Motorcycle Plates
 - YOLOv8 detection for moto plates
@@ -200,7 +194,6 @@ This project is open source and **not officially affiliated** with OpenALPR Inc.
 
 ---
 
-<<<<<<< HEAD
 ## 🇧🇷 Português
 
 ## Visão Geral
@@ -251,7 +244,3 @@ alpr -c br moto.jpg
 
 ## Aviso Legal
 Projeto open source, **sem afiliação oficial** com a OpenALPR Inc.
-=======
-# Aviso Legal
-Projeto open source, sem afiliação oficial com a OpenALPR Inc.
->>>>>>> 4ffc6cc (docs(readme): normalize tone to technical C/C++ system style)
