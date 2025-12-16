@@ -1301,6 +1301,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     if (!cap.read(frame) || frame.empty()) break;
     frameIdx++;
     framesTotal++;
+    if (opts.fallbackOcr) fallbackAttempts++;
     if (opts.maxSeconds > 0) {
       double elapsed = wallSeconds() - startWall;
       if (elapsed >= opts.maxSeconds) break;
