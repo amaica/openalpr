@@ -24,6 +24,7 @@
 #include "utility.h"
 #include "config_helper.h"
 #include <opencv2/objdetect/objdetect.hpp>
+#include <algorithm>
 
 using namespace std;
 
@@ -291,13 +292,57 @@ namespace alpr
     
     prewarp = getString(ini, defaultIni, "", "prewarp", "");
 
-    profile = getString(ini, defaultIni, "", "profile", "default");
-    std::transform(profile.begin(), profile.end(), profile.begin(), ::tolower);
-    if (profile != "default" && profile != "moto" && profile != "garagem") {
-      std::cerr << "[config][warn] invalid profile=" << profile << ", using default" << std::endl;
-      profile = "default";
+    vehicle = getString(ini, defaultIni, "", "vehicle", "car");
+    std::transform(vehicle.begin(), vehicle.end(), vehicle.begin(), ::tolower);
+    if (vehicle != "car" && vehicle != "moto") {
+      std::cerr << "[config][warn] invalid vehicle=" << vehicle << ", using car" << std::endl;
+      vehicle = "car";
     }
+
+    scenario = getString(ini, defaultIni, "", "scenario", "default");
+    std::transform(scenario.begin(), scenario.end(), scenario.begin(), ::tolower);
+    if (scenario != "default" && scenario != "garagem") {
+      std::cerr << "[config][warn] invalid scenario=" << scenario << ", using default" << std::endl;
+      scenario = "default";
+    }
+
+    int configuredBurst = getInt(ini, defaultIni, "", "ocr_burst_frames", -1);
+    int configuredVoteWindow = getInt(ini, defaultIni, "", "vote_window", -1);
+    int configuredMinVotes = getInt(ini, defaultIni, "", "min_votes", -1);
+    bool configuredFallback = getBoolean(ini, defaultIni, "", "fallback_ocr_enabled", false);
+    motoUpsample = getBoolean(ini, defaultIni, "", "moto_upsample", false);
+    motoUpsampleScale = getFloat(ini, defaultIni, "", "moto_upsample_scale", 2.0f);
+    if (motoUpsampleScale <= 0.0f) {
+      std::cerr << "[config][warn] moto_upsample_scale <= 0; using 2.0" << std::endl;
+      motoUpsampleScale = 2.0f;
+    }
+
+    int defaultBurst = 1;
+    int defaultMinVotes = 1;
+    bool defaultFallback = false;
+    if (vehicle == "moto") {
+      defaultBurst = 6;
+      defaultMinVotes = 3;
+    }
+    if (scenario == "garagem") {
+      defaultBurst = std::max(defaultBurst, 10);
+      defaultMinVotes = std::max(defaultMinVotes, 3);
+      defaultFallback = true;
+    }
+
+    ocrBurstFrames = (configuredBurst > 0) ? configuredBurst : defaultBurst;
+    voteWindow = (configuredVoteWindow > 0) ? configuredVoteWindow : ocrBurstFrames;
+    minVotes = (configuredMinVotes > 0) ? configuredMinVotes : defaultMinVotes;
+    fallbackOcrEnabled = configuredFallback || defaultFallback;
+
+    profile = scenario == "garagem" ? "garagem" : (vehicle == "moto" ? "moto" : "default");
     std::cout << "[config] profile=" << profile << std::endl;
+    std::cout << "[config] vehicle=" << vehicle << std::endl;
+    std::cout << "[config] scenario=" << scenario << std::endl;
+    std::cout << "[config] fallback_ocr_enabled=" << (fallbackOcrEnabled ? 1 : 0) << std::endl;
+    std::cout << "[config] ocr_burst_frames=" << ocrBurstFrames
+              << " vote_window=" << voteWindow
+              << " min_votes=" << minVotes << std::endl;
             
     maxPlateAngleDegrees = getInt(ini, defaultIni, "", "max_plate_angle_degrees", 15);
 
