@@ -1125,38 +1125,23 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "[config] country=" << country << "\n";
   string skipDet = cfg.get("skip_detection","0");
   cout << "[config] skip_detection=" << skipDet << "\n";
-  auto applyStrategy = [&](){
-    int burst = 1;
-    int minVotes = 1;
-    bool voting = false;
-    bool fallback = false;
-    std::string profileForOcr = "default";
-    if (opts.vehicle == "moto") {
-      burst = std::max(burst, 6);
-      minVotes = std::max(minVotes, 3);
-      voting = true;
-      profileForOcr = "moto";
-    }
-    if (opts.scenario == "garagem") {
-      burst = std::max(burst, 10);
-      minVotes = std::max(minVotes, 3);
-      voting = true;
-      fallback = true;
-      profileForOcr = "garagem";
-    }
-    opts.ocrBurstFrames = burst;
-    opts.ocrMinVotes = minVotes;
-    opts.temporalVoting = voting;
-    opts.fallbackOcr = fallback;
-    cfg.set("profile", profileForOcr);
-    cfg.save();
-  };
-  applyStrategy();
+  cfg.set("vehicle", opts.vehicle);
+  cfg.set("scenario", opts.scenario);
+  std::string profileForOcr = (opts.scenario == "garagem") ? "garagem" : (opts.vehicle == "moto" ? "moto" : "default");
+  cfg.set("profile", profileForOcr);
+  cfg.save();
+  opts.vehicle = cfg.get("vehicle", opts.vehicle);
+  opts.scenario = cfg.get("scenario", opts.scenario);
+  opts.ocrBurstFrames = std::max(1, atoi(cfg.get("ocr_burst_frames", "1").c_str()));
+  opts.ocrMinVotes = std::max(1, atoi(cfg.get("min_votes", "1").c_str()));
+  opts.temporalVoting = (opts.ocrBurstFrames > 1) || (opts.ocrMinVotes > 1);
+  opts.fallbackOcr = cfg.get("fallback_ocr_enabled", opts.fallbackOcr ? "1" : "0") == "1";
+  int voteWindowForLog = std::max(1, atoi(cfg.get("vote_window", cfg.get("ocr_burst_frames", "1")).c_str()));
   cout << "[config] vehicle=" << opts.vehicle << "\n";
   cout << "[config] scenario=" << opts.scenario << "\n";
   cout << "[config] ocr_burst_frames=" << opts.ocrBurstFrames
        << " voting=" << (opts.temporalVoting ? "on" : "off")
-       << " window=" << opts.ocrBurstFrames << "\n";
+       << " window=" << voteWindowForLog << "\n";
   if (cfg.get("ocr_only_after_crossing","0") == "1") opts.ocrOnlyAfterCrossing = true;
   if (cfg.get("log_ocr_metrics","0") == "1") opts.logOcrMetrics = true;
   if (cfg.get("log_crossing_metrics","0") == "1") opts.logCrossingMetrics = true;
@@ -1267,27 +1252,12 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   int platesNone = 0;
   int platesFoundPostCrossing = 0;
   int platesNonePostCrossing = 0;
-  int votesEmitted = 0;
-  std::set<std::string> finalVotes;
-  std::deque<std::string> burstWindow;
-  std::string lastVote;
+  int votesEmittedTotal = 0;
+  int finalPlateCountTotal = 0;
   int ocrPassesTotal = 0;
-  int fallbackAttempts = 0;
-  bool fallbackEnabled = opts.fallbackOcr;
-  auto computeMajority = [](const std::deque<std::string>& win)->std::pair<std::string,int>{
-    std::map<std::string,int> counts;
-    for (const auto& s : win) {
-      if (s.empty() || s == "<none>") continue;
-      counts[s]++;
-    }
-    int best = 0;
-    std::string bestStr;
-    for (const auto& kv : counts) {
-      if (kv.second > best) { best = kv.second; bestStr = kv.first; }
-    }
-    if (best <= 0) return std::make_pair(std::string(), 0);
-    return std::make_pair(bestStr, best);
-  };
+  int fallbackAttemptsTotal = 0;
+  const int voteWindowCfg = std::max(1, atoi(cfg.get("vote_window", cfg.get("ocr_burst_frames", "1")).c_str()));
+  bool fallbackEnabled = cfg.get("fallback_ocr_enabled", "0") == "1";
   bool crossingEnabled = (opts.crossingMode == "motion");
   if (crossingEnabled && (opts.crossingP1 == opts.crossingP2)) {
     cerr << "crossing-mode=motion requires --line x1,y1,x2,y2\n";
@@ -1303,7 +1273,6 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     if (!cap.read(frame) || frame.empty()) break;
     frameIdx++;
     framesTotal++;
-    if (opts.fallbackOcr) fallbackAttempts++;
     if (opts.maxSeconds > 0) {
       double elapsed = wallSeconds() - startWall;
       if (elapsed >= opts.maxSeconds) break;
@@ -1657,25 +1626,9 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       }
       logLine(m.str());
     }
-    bool burstActive = (opts.ocrBurstFrames > 1) && allowAlpr && (!opts.ocrOnlyAfterCrossing || isPostCrossing);
-    if (burstActive) {
-      burstWindow.push_back(framePlateText.empty() ? std::string("<none>") : framePlateText);
-      while (static_cast<int>(burstWindow.size()) > opts.ocrBurstFrames) burstWindow.pop_front();
-      if (static_cast<int>(burstWindow.size()) == opts.ocrBurstFrames) {
-        auto voteRes = computeMajority(burstWindow);
-        if (!voteRes.first.empty() && voteRes.second >= opts.ocrMinVotes && voteRes.first != lastVote) {
-          lastVote = voteRes.first;
-          votesEmitted++;
-          finalVotes.insert(voteRes.first);
-          std::ostringstream v;
-          v << "[vote] vehicle=" << opts.vehicle
-            << " scenario=" << opts.scenario
-            << " plate=" << voteRes.first
-            << " window=" << opts.ocrBurstFrames;
-          logLine(v.str());
-        }
-      }
-    }
+    votesEmittedTotal += results.votes_emitted;
+    finalPlateCountTotal += results.final_plate_count;
+    fallbackAttemptsTotal += results.fallback_attempts;
 
     if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
     if (speedCfg.enabled) {
@@ -1725,18 +1678,19 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   cout << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
   cout << "crossing_frame=" << crossingFrame << "\n";
   int framesAfterCrossing = (crossingFrame >= 0) ? (framesTotal - crossingFrame + 1) : 0;
-  if (fallbackEnabled) fallbackAttempts = framesTotal;
   cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
   cout << "wall_time_s=" << wallTimeSeconds << "\n";
   cout << "fps=" << fpsReport << "\n";
   cout << "vehicle=" << opts.vehicle << "\n";
   cout << "scenario=" << opts.scenario << "\n";
   cout << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
+  cout << "vote_window=" << voteWindowCfg << "\n";
+  cout << "min_votes=" << opts.ocrMinVotes << "\n";
   cout << "ocr_passes_total=" << ocrPassesTotal << "\n";
   cout << "fallback_ocr_enabled=" << (fallbackEnabled ? 1 : 0) << "\n";
-  cout << "fallback_attempts=" << fallbackAttempts << "\n";
-  cout << "votes_emitted=" << votesEmitted << "\n";
-  cout << "final_plate_count=" << finalVotes.size() << "\n";
+  cout << "fallback_attempts=" << fallbackAttemptsTotal << "\n";
+  cout << "votes_emitted=" << votesEmittedTotal << "\n";
+  cout << "final_plate_count=" << finalPlateCountTotal << "\n";
 
   if (!opts.reportJsonPath.empty()) {
     ensureParentDir(opts.reportJsonPath);
@@ -1755,11 +1709,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       js << "  \"vehicle\": \"" << opts.vehicle << "\",\n";
       js << "  \"scenario\": \"" << opts.scenario << "\",\n";
       js << "  \"ocr_burst_frames\": " << opts.ocrBurstFrames << ",\n";
+      js << "  \"vote_window\": " << voteWindowCfg << ",\n";
+      js << "  \"min_votes\": " << opts.ocrMinVotes << ",\n";
       js << "  \"ocr_passes_total\": " << ocrPassesTotal << ",\n";
       js << "  \"fallback_ocr_enabled\": " << (fallbackEnabled ? 1 : 0) << ",\n";
-      js << "  \"fallback_attempts\": " << fallbackAttempts << ",\n";
-      js << "  \"votes_emitted\": " << votesEmitted << ",\n";
-      js << "  \"final_plate_count\": " << finalVotes.size() << "\n";
+      js << "  \"fallback_attempts\": " << fallbackAttemptsTotal << ",\n";
+      js << "  \"votes_emitted\": " << votesEmittedTotal << ",\n";
+      js << "  \"final_plate_count\": " << finalPlateCountTotal << "\n";
       js << "}\n";
     }
     bool pass = (rt.path != runtimePreferred) &&
