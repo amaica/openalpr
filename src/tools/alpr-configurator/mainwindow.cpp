@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QSortFilterProxyModel>
 #include <QTableWidgetItem>
+#include <QStatusBar>
 
 #include <filesystem>
 #include <opencv2/objdetect/objdetect.hpp>
@@ -42,19 +43,23 @@ void MainWindow::buildUi() {
   gLayout->addLayout(confRow);
 
   auto countryRow = new QHBoxLayout();
-  countryEdit_ = new QLineEdit();
+  countryEdit_ = new QComboBox();
+  countryEdit_->setEditable(true);
   countryRow->addWidget(new QLabel("Country:"));
   countryRow->addWidget(countryEdit_);
   gLayout->addLayout(countryRow);
 
   auto rtRow = new QHBoxLayout();
   runtimeEdit_ = new QLineEdit();
-  auto testPathsBtn = new QPushButton("Test Paths");
+  auto testPathsBtn = new QPushButton("Validate");
   connect(testPathsBtn, &QPushButton::clicked, this, &MainWindow::onTestPaths);
+  auto autoSetupBtn = new QPushButton("Auto Setup");
+  connect(autoSetupBtn, &QPushButton::clicked, this, &MainWindow::onAutoSetup);
   testStatus_ = new QLabel("-");
   rtRow->addWidget(new QLabel("Runtime data:"));
   rtRow->addWidget(runtimeEdit_);
   rtRow->addWidget(testPathsBtn);
+  rtRow->addWidget(autoSetupBtn);
   rtRow->addWidget(testStatus_);
   gLayout->addLayout(rtRow);
 
@@ -199,6 +204,9 @@ void MainWindow::buildUi() {
 
   setCentralWidget(tabs);
   resize(800, 600);
+  statusBarLabel_ = new QLabel("Ready");
+  statusBar()->addWidget(statusBarLabel_);
+  onAutoSetup();
 }
 
 void MainWindow::onBrowseConf() {
@@ -238,7 +246,7 @@ void MainWindow::onSaveAs() {
 bool MainWindow::validatePaths(QString& message) {
   namespace fs = std::filesystem;
   QString runtime = runtimeEdit_->text();
-  QString country = countryEdit_->text();
+  QString country = countryEdit_->currentText();
   if (runtime.isEmpty() || country.isEmpty()) { message = "runtime_data or country empty"; return false; }
   fs::path base(runtime.toStdString());
   if (!fs::exists(base)) { message = "runtime_data does not exist"; return false; }
@@ -248,6 +256,8 @@ bool MainWindow::validatePaths(QString& message) {
   if (!fs::exists(cascade)) { message = QString("cascade missing: %1").arg(QString::fromStdString(cascade.string())); return false; }
   cv::CascadeClassifier cc;
   if (!cc.load(cascade.string())) { message = "cascade cannot be loaded"; return false; }
+  fs::path tessdir = fs::path(runtime.toStdString()) / "ocr" / "tessdata";
+  if (!fs::exists(tessdir)) { message = "tessdata missing"; return false; }
   message = "OK";
   return true;
 }
@@ -257,10 +267,11 @@ void MainWindow::onTestPaths() {
   bool ok = validatePaths(msg);
   testStatus_->setText(ok ? "OK" : msg);
   testStatus_->setStyleSheet(ok ? "color: green;" : "color: red;");
+  statusBarLabel_->setText(ok ? "runtime_data OK" : msg);
 }
 
 void MainWindow::populateFromModel() {
-  countryEdit_->setText(QString::fromStdString(model_.get("country","")));
+  countryEdit_->setEditText(QString::fromStdString(model_.get("country","")));
   runtimeEdit_->setText(QString::fromStdString(model_.get("runtime_dir","")));
   skipDetectionCheck_->setChecked(model_.get("skip_detection","0")=="1");
   detectorEdit_->setText(QString::fromStdString(model_.get("detector","lbpcpu")));
@@ -288,7 +299,7 @@ void MainWindow::populateFromModel() {
 }
 
 void MainWindow::applyFromUiToModel() {
-  model_.set("country", countryEdit_->text().toStdString());
+  model_.set("country", countryEdit_->currentText().toStdString());
   model_.set("runtime_dir", runtimeEdit_->text().toStdString());
   model_.set("skip_detection", skipDetectionCheck_->isChecked() ? "1" : "0");
   model_.set("detector", detectorEdit_->text().toStdString());
@@ -362,7 +373,7 @@ void MainWindow::onGenerateCmd() {
   QString conf = confPathEdit_->text();
   if (conf.isEmpty()) conf = "openalpr.conf";
   cmd << "./build/src/alpr-tool preview --conf " << conf.toStdString();
-  if (!countryEdit_->text().isEmpty()) cmd << " --country " << countryEdit_->text().toStdString();
+  if (!countryEdit_->currentText().isEmpty()) cmd << " --country " << countryEdit_->currentText().toStdString();
   if (ocrAfterCrossCheck_->isChecked()) cmd << " --ocr-only-after-crossing 1";
   if (!crossingRoiEdit_->text().isEmpty()) cmd << " --crossing-roi " << crossingRoiEdit_->text().toStdString();
   if (!crossingLineEdit_->text().isEmpty()) cmd << " --line " << crossingLineEdit_->text().toStdString();
@@ -391,5 +402,78 @@ void MainWindow::onAdvancedFilter(const QString& text) {
     bool match = advancedTable_->item(r,0)->text().contains(text, Qt::CaseInsensitive);
     advancedTable_->setRowHidden(r, !text.isEmpty() && !match);
   }
+}
+
+void MainWindow::onAutoSetup() {
+  // resolve runtime_data and list countries
+  namespace fs = std::filesystem;
+  // Try candidates similar to tool logic
+  std::vector<std::string> candidates;
+  auto push = [&](const std::string& p){ if(!p.empty()) candidates.push_back(p); };
+  const char* envRt = getenv("OPENALPR_RUNTIME_DATA");
+  if (envRt) push(envRt);
+  push("/usr/share/openalpr/runtime_data");
+  push("/usr/local/share/openalpr/runtime_data");
+  push("./runtime_data");
+  push((fs::current_path()/ "runtime_data").string());
+  push((fs::current_path().parent_path()/ "runtime_data").string());
+
+  std::string chosen;
+  for (auto& c : candidates) {
+    fs::path p(c);
+    if (fs::exists(p) && fs::exists(p/"region")) {
+      chosen = c;
+      break;
+    }
+  }
+  if (chosen.empty()) {
+    statusBarLabel_->setText("runtime_data not found");
+    return;
+  }
+  runtimeEdit_->setText(QString::fromStdString(chosen));
+
+  // list countries
+  countryEdit_->clear();
+  std::vector<std::string> countries;
+  for (auto& entry : fs::directory_iterator(fs::path(chosen)/"region")) {
+    if (!entry.is_regular_file()) continue;
+    auto name = entry.path().filename().string();
+    if (name.size() > 4 && name.substr(name.size()-4)==".xml") {
+      countries.push_back(name.substr(0,name.size()-4));
+    }
+  }
+  std::sort(countries.begin(), countries.end());
+  for (auto& c : countries) countryEdit_->addItem(QString::fromStdString(c));
+  QString defCountry;
+  if (std::find(countries.begin(), countries.end(), "br2") != countries.end()) defCountry = "br2";
+  else if (std::find(countries.begin(), countries.end(), "br") != countries.end()) defCountry = "br";
+  else if (!countries.empty()) defCountry = QString::fromStdString(countries.front());
+  countryEdit_->setEditText(defCountry);
+
+  // generate default configs if missing
+  fs::path outDir = fs::path("artifacts")/"configs";
+  fs::create_directories(outDir);
+  fs::path cfgPath = outDir/("openalpr." + defCountry.toStdString() + ".conf");
+  if (!fs::exists(cfgPath)) {
+    ConfigModel tmp;
+    tmp.set("runtime_dir", chosen);
+    tmp.set("country", defCountry.toStdString());
+    tmp.set("detector", "lbpcpu");
+    tmp.set("skip_detection", "0");
+    tmp.save(cfgPath.string());
+    ConfigModel defCfg;
+    defCfg.set("runtime_dir", chosen);
+    defCfg.set("country", defCountry.toStdString());
+    defCfg.set("detector", "lbpcpu");
+    defCfg.set("skip_detection", "0");
+    defCfg.save((outDir/"openalpr.default.conf").string());
+  }
+  confPathEdit_->setText(QString::fromStdString(cfgPath.string()));
+  onLoad();
+  QString msg;
+  bool ok = validatePaths(msg);
+  testStatus_->setText(ok ? "OK" : msg);
+  testStatus_->setStyleSheet(ok ? "color: green;" : "color: red;");
+  statusBarLabel_->setText(ok ? "runtime_data OK" : msg);
 }
 

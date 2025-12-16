@@ -19,6 +19,7 @@ private slots:
   void onSave();
   void onSaveAs();
   void onTestPaths();
+  void onAutoSetup();
   void onApplyRaw();
   void onFromUiToRaw();
   void onGenerateCmd();
@@ -37,9 +38,10 @@ private:
 
   // General
   QLineEdit* confPathEdit_;
-  QLineEdit* countryEdit_;
+  QComboBox* countryEdit_;
   QLineEdit* runtimeEdit_;
   QLabel* testStatus_;
+  QLabel* statusBarLabel_;
 
   // Detection
   QCheckBox* skipDetectionCheck_;
