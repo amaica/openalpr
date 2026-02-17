@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenALPR — Ver detecções</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Outfit', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: { alpr: { bg: '#0f172a', card: '#1e293b', accent: '#38bdf8', border: '#334155' } }
+        }
+      }
+    };
+  </script>
+  <style>
+    body { font-family: 'Outfit', sans-serif; }
+    code, .mono { font-family: 'JetBrains Mono', monospace; }
+    #streamImg { background: #111; min-height: 360px; }
+  </style>
+</head>
+<body class="bg-alpr-bg text-slate-200 min-h-screen">
+  <div class="max-w-6xl mx-auto px-4 py-6">
+    <header class="border-b border-alpr-border pb-4 mb-6">
+      <h1 class="text-2xl font-bold text-alpr-accent">OpenALPR — Ver detecções</h1>
+      <p class="text-slate-400 text-sm mt-1">Vídeo com placas detectadas (caixas e texto) direto no navegador.</p>
+      <div id="bootstrap-status" class="mt-3 flex flex-wrap gap-3 items-center text-sm">
+        <span class="text-slate-500">Carregando...</span>
+      </div>
+    </header>
+
+    <!-- Ver detecções (principal) -->
+    <section class="bg-alpr-card rounded-lg border border-alpr-border p-4 mb-6">
+      <h2 class="font-semibold text-alpr-accent mb-3">Ver detecções no vídeo</h2>
+      <p class="text-slate-400 text-sm mb-3">Informe o caminho do vídeo e clique em <strong>Iniciar</strong>. A imagem abaixo mostrará o vídeo com as placas desenhadas (pode levar alguns segundos para começar).</p>
+      <div class="flex flex-wrap gap-3 items-end mb-4">
+        <div class="flex-1 min-w-[200px]">
+          <label class="block text-xs text-slate-400 mb-1">Caminho do vídeo</label>
+          <input type="text" id="source" placeholder="/home/aurelio/YOLO/videos/output2.avi" class="w-full bg-slate-800 border border-alpr-border rounded px-3 py-2 text-sm mono">
+        </div>
+        <div class="w-32">
+          <label class="block text-xs text-slate-400 mb-1">País</label>
+          <select id="country" class="w-full bg-slate-800 border border-alpr-border rounded px-3 py-2 text-sm mono">
+            <option value="br">br</option>
+          </select>
+        </div>
+        <button id="btn-stream" class="bg-alpr-accent text-slate-900 font-semibold py-2 px-5 rounded hover:bg-cyan-300 transition">
+          Iniciar
+        </button>
+      </div>
+      <div class="rounded overflow-hidden border border-alpr-border">
+        <img id="streamImg" src="" alt="Stream de detecções" class="w-full" style="display:none;">
+        <div id="streamPlaceholder" class="py-16 text-center text-slate-500 text-sm">
+          Clique em <strong>Iniciar</strong> após preencher o caminho do vídeo.
+        </div>
+      </div>
+      <p id="streamError" class="text-red-400 text-sm mt-2 hidden"></p>
+      <p class="text-slate-500 text-xs mt-2">Até 30 s de vídeo. Aguarde o carregamento. Se não aparecer nada, confira se o vídeo existe e se o <code class="text-slate-400">alpr-tool</code> foi compilado (build/).</p>
+    </section>
+
+    <!-- Comando alternativo (terminal) -->
+    <section class="bg-alpr-card rounded-lg border border-alpr-border p-4 mb-6">
+      <h2 class="font-semibold text-alpr-accent mb-2">Ver no terminal (janela própria)</h2>
+      <p class="text-slate-400 text-sm mb-2">Se preferir ver numa janela do sistema, copie o comando abaixo e execute no terminal.</p>
+      <pre id="preview-command" class="bg-slate-900 border border-alpr-border rounded p-3 text-sm mono text-slate-300 overflow-x-auto">./build/src/alpr-tool preview --country br --source /caminho/do/video.mp4</pre>
+      <button id="btn-cmd" class="mt-2 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1 rounded">Atualizar comando</button>
+    </section>
+
+    <!-- Configuração (secundário) -->
+    <details class="bg-alpr-card rounded-lg border border-alpr-border mb-6">
+      <summary class="p-4 cursor-pointer font-semibold text-alpr-accent">Configuração (.conf) e presets</summary>
+      <div class="p-4 pt-0 space-y-4">
+        <div class="flex gap-2 items-center">
+          <select id="preset" class="bg-slate-800 border border-alpr-border rounded px-3 py-2 text-sm mono">
+            <option value="">Preset...</option>
+          </select>
+          <button id="btn-load" class="text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded">Carregar default</button>
+          <button id="btn-save" class="text-sm bg-emerald-700/50 hover:bg-emerald-600/50 text-emerald-300 px-3 py-1 rounded border border-emerald-500/50">Salvar</button>
+        </div>
+        <textarea id="config-content" rows="12" class="w-full bg-slate-900 border border-alpr-border rounded p-3 text-sm mono text-slate-300 resize-y"></textarea>
+        <p id="config-path" class="text-slate-500 text-xs"></p>
+      </div>
+    </details>
+
+    <footer class="text-slate-500 text-xs border-t border-alpr-border pt-4">
+      Backend: Crow · UI: Tailwind. Docs: <code class="text-slate-400">docs/CONFIG_STUDY.md</code>
+    </footer>
+  </div>
+
+  <script>
+    const API = '';
+
+    // Bootstrap: on load, call /api/bootstrap and show status + country list
+    async function runBootstrap() {
+      const statusEl = document.getElementById('bootstrap-status');
+      const countrySel = document.getElementById('country');
+      try {
+        const r = await fetch(API + '/api/bootstrap');
+        const j = await r.ok ? r.json() : {};
+        const runtimeOk = j.runtime_data_ok === true;
+        const cascadeOk = j.cascade_ok === true;
+        const tessOk = j.tessdata_ok === true;
+        statusEl.innerHTML =
+          '<span class="' + (runtimeOk ? 'text-emerald-400' : 'text-red-400') + '">runtime_data ' + (runtimeOk ? 'OK' : 'FAIL') + '</span>' +
+          '<span class="' + (cascadeOk ? 'text-emerald-400' : 'text-red-400') + '">cascade ' + (cascadeOk ? 'OK' : 'FAIL') + '</span>' +
+          '<span class="' + (tessOk ? 'text-emerald-400' : 'text-red-400') + '">tessdata ' + (tessOk ? 'OK' : 'FAIL') + '</span>' +
+          (j.config_generated ? '<span class="text-amber-400">config gerado</span>' : '');
+        const countries = j.countries || [];
+        countrySel.innerHTML = countries.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+        const sel = j.selected_country || 'br';
+        if (countries.indexOf(sel) >= 0) countrySel.value = sel;
+        else if (countries.length) countrySel.value = countries[0];
+        if (j.config_generated) loadConfig('');
+      } catch (e) {
+        statusEl.innerHTML = '<span class="text-red-400">Bootstrap falhou</span>';
+      }
+    }
+
+    // Stream: check debug paths first, then start img stream
+    document.getElementById('btn-stream').addEventListener('click', async function() {
+      const source = document.getElementById('source').value.trim();
+      const country = document.getElementById('country').value.trim() || 'br';
+      const img = document.getElementById('streamImg');
+      const placeholder = document.getElementById('streamPlaceholder');
+      const errEl = document.getElementById('streamError');
+      if (!source) {
+        errEl.textContent = 'Informe o caminho do vídeo.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      errEl.classList.add('hidden');
+      try {
+        const dp = await fetch(API + '/api/debug-paths');
+        const j = await dp.json();
+        if (j.alpr_tool_exists === false) {
+          errEl.innerHTML = 'alpr-tool não encontrado em <code class="text-slate-300">' + (j.alpr_tool_path || '') + '</code>. Rode o servidor a partir da raiz do repo ou compile: <code class="text-slate-300">cd build && make alpr-tool</code>.';
+          errEl.classList.remove('hidden');
+          return;
+        }
+      } catch (_) {}
+      placeholder.textContent = 'Aguarde (até ~30 s)...';
+      placeholder.style.display = 'block';
+      img.style.display = 'none';
+      img.src = API + '/stream?source=' + encodeURIComponent(source) + '&country=' + encodeURIComponent(country);
+      img.onerror = function() {
+        errEl.textContent = 'Erro ao carregar o stream. Verifique se o vídeo existe e se o alpr-tool foi compilado.';
+        errEl.classList.remove('hidden');
+        placeholder.textContent = 'Clique em Iniciar após preencher o caminho do vídeo.';
+      };
+      img.onload = function() { placeholder.style.display = 'none'; img.style.display = 'block'; };
+    });
+
+    // Presets
+    async function getPresets() {
+      const r = await fetch(API + '/api/presets');
+      const j = await r.json();
+      const sel = document.getElementById('preset');
+      sel.innerHTML = '<option value="">Preset...</option>';
+      (j.presets || []).forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        sel.appendChild(o);
+      });
+    }
+    async function loadConfig(path) {
+      const url = path ? API + '/api/config?path=' + encodeURIComponent(path) : API + '/api/config';
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const j = await r.json();
+      document.getElementById('config-content').value = j.content || '';
+      document.getElementById('config-path').textContent = j.path || '';
+    }
+    document.getElementById('preset').addEventListener('change', function() {
+      if (this.value) loadConfig('artifacts/configs/' + this.value);
+    });
+    document.getElementById('btn-load').addEventListener('click', () => loadConfig(''));
+    document.getElementById('btn-save').addEventListener('click', async () => {
+      const r = await fetch(API + '/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '', content: document.getElementById('config-content').value })
+      });
+      if (r.ok) document.getElementById('config-path').textContent = 'Salvo.';
+    });
+
+    // Preview command
+    async function updateCmd() {
+      const source = document.getElementById('source').value.trim();
+      const country = document.getElementById('country').value.trim() || 'br';
+      const params = new URLSearchParams({ country });
+      if (source) params.set('source', source);
+      const r = await fetch(API + '/api/preview-command?' + params);
+      const j = await r.json();
+      document.getElementById('preview-command').textContent = j.command || '';
+    }
+    document.getElementById('btn-cmd').addEventListener('click', updateCmd);
+    document.getElementById('source').addEventListener('change', updateCmd);
+    document.getElementById('country').addEventListener('change', updateCmd);
+
+    runBootstrap().then(() => { getPresets(); loadConfig(''); updateCmd(); });
+  </script>
+</body>
+</html>
