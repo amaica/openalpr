@@ -102,6 +102,26 @@ make -j"$(nproc)"
   --source /path/to/video.mp4
 ```
 
+### Count only plates past the line (recommended)
+OCR runs on every frame; **only plates whose position is past** the green line (vehicle already crossed) are counted and shown:
+
+```bash
+./build/src/alpr-tool preview \
+  --country br \
+  --source /path/to/video.mp4 \
+  --plates-only-past-line 1 \
+  --crossing-line-pct 50
+```
+
+- `--plates-only-past-line 1`: OCR always on; only plates with center **below** the line count.
+- `--ocr-only-after-crossing 1`: disables OCR until the line is crossed; before that you’ll see “GATED (waiting crossing)”.
+- `--crossing-line-pct 50`: horizontal line at 50% of frame height (default). Or set the line in pixels: `--line 0,Y,W,Y` (e.g. `--line 0,540,1920,540` for 1080p).
+- `--crossing-fallback-sec 3`: if no crossing is detected after this many seconds, OCR is allowed anyway (avoids getting 0 plates when the tripwire never fires).
+
+The **green line** drawn on the preview is the gate: OCR runs only after motion crosses it (or after the fallback time).
+
+- **Estudo completo de configurações**: [docs/CONFIG_STUDY.md](docs/CONFIG_STUDY.md) — todas as chaves do .conf, CLI do `alpr-tool preview` e opções do core.
+
 ## GUI (Qt configurator)
 
 Build:
@@ -283,6 +303,21 @@ make -j"$(nproc)"
 ```bash
 ./build/src/alpr-tool preview --profile=garagem --country=br --source /path/to/video.mp4
 ```
+
+### Contar só placas que já atravessaram a linha (recomendado)
+OCR roda em todo frame; **só contam e aparecem** as placas cuja posição está **além** da linha verde (veículo já atravessou):
+
+```bash
+./build/src/alpr-tool preview --country br --source /path/to/video.mp4 \
+  --plates-only-past-line 1 --crossing-line-pct 50
+```
+
+- `--plates-only-past-line 1`: OCR sempre ligado; só placas com centro **abaixo** da linha entram na contagem.
+- `--ocr-only-after-crossing 1`: OCR só após cruzar; antes aparece “GATED (waiting crossing)”.
+- `--crossing-line-pct 50`: linha horizontal a 50% da altura do frame. Ou use `--line 0,Y,W,Y` em pixels.
+- `--crossing-fallback-sec 3`: se nenhum cruzamento for detectado após esses segundos, o OCR é liberado mesmo assim (evita ficar com 0 placas quando a tripwire nunca dispara).
+
+A **linha verde** no preview é a porteira: o OCR só roda depois que o movimento cruza essa linha (ou após o tempo de fallback).
 
 ---
 

@@ -127,6 +127,7 @@ namespace alpr
       delete iterator->second.plateDetector;
       delete iterator->second.stateDetector;
       delete iterator->second.ocr;
+      if (iterator->second.fallbackOcr != NULL) delete iterator->second.fallbackOcr;
     }
 
     delete prewarp;
@@ -671,23 +672,27 @@ namespace alpr
         int minVotes = std::max(1, config->minVotes);
         pipeline_data.ocr_passes_total = 0;
         std::vector<AlprPlateResult> passResults;
-        auto runPass = [&](){
-          country_recognizers.ocr->performOCR(&pipeline_data);
-          country_recognizers.ocr->postProcessor.analyze(baseResult.region, topN);
-          const vector<PPResult> ppResults = country_recognizers.ocr->postProcessor.getResults();
+        auto runPass = [&](OCR* ocrEngine){
+          ocrEngine->performOCR(&pipeline_data);
+          ocrEngine->postProcessor.analyze(baseResult.region, topN);
+          const vector<PPResult> ppResults = ocrEngine->postProcessor.getResults();
           AlprPlateResult passResult;
           if (buildPlateFromPost(ppResults, passResult)) {
             passResults.push_back(passResult);
           }
         };
 
-        for (int i = 0; i < burst; i++) runPass();
+        for (int i = 0; i < burst; i++) runPass(country_recognizers.ocr);
 
         int localFallbackAttempts = 0;
         if (passResults.size() == 0 && config->fallbackOcrEnabled)
         {
           localFallbackAttempts = std::max(1, voteWindow);
-          for (int i = 0; i < localFallbackAttempts; i++) runPass();
+          OCR* fallbackEngine = country_recognizers.fallbackOcr ? country_recognizers.fallbackOcr : country_recognizers.ocr;
+          // If we have a dedicated fallback engine (e.g. cloud API), just try once
+          if (country_recognizers.fallbackOcr) localFallbackAttempts = 1;
+
+          for (int i = 0; i < localFallbackAttempts; i++) runPass(fallbackEngine);
         }
 
         if (passResults.size() > static_cast<size_t>(voteWindow)) {
@@ -1160,7 +1165,10 @@ namespace alpr
         // Country training data has not already been loaded.  Load it.
         AlprRecognizers recognizer;
         recognizer.plateDetector = createDetector(config, prewarp);
-        recognizer.ocr = createOcr(config);
+        recognizer.ocr = createOcr(config, config->ocrConfig.primary);
+        recognizer.fallbackOcr = NULL;
+        if (config->ocrConfig.fallbackEnabled)
+            recognizer.fallbackOcr = createOcr(config, config->ocrConfig.fallbackPlugin);
 
         #ifndef SKIP_STATE_DETECTION
         recognizer.stateDetector = new StateDetector(this->config->country, this->config->config_file_path, this->config->runtimeBaseDir);

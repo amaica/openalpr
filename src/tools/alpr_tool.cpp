@@ -333,6 +333,7 @@ struct PreviewRuntimeOptions {
   bool logEvents=true;
   bool logOcrMetrics=false;
   bool ocrOnlyAfterCrossing=false;
+  bool platesOnlyPastLine=false;   // run OCR always; count/display only plates past the line
   bool logCrossingMetrics=false;
   std::string crossingMode="off"; // off|motion
   bool crossingRoiProvided=false;
@@ -341,6 +342,7 @@ struct PreviewRuntimeOptions {
   Rect alprRoi;
   Point crossingP1;
   Point crossingP2;
+  bool crossingLineProvided=false; // true if --line was given; else use crossingLinePct
   int motionThresh=25;
   int motionMinArea=1500;
   int crossingDebounce=3;
@@ -357,12 +359,14 @@ struct PreviewRuntimeOptions {
   bool gateAfterCrossing=false;
   std::string reportJsonPath;
   double crossingLinePct=50.0; // percent of frame/ROI height
+  double crossingFallbackSec=0.0; // if >0 and still gated after this many sec, allow OCR anyway
   std::string vehicle="car";    // car | moto
   std::string scenario="default"; // default | garagem
   int ocrBurstFrames=1;
   int ocrMinVotes=1;
   bool temporalVoting=false;
   bool fallbackOcr=false;
+  bool outputMjpeg=false; // stream MJPEG to stdout for web viewer
 };
 
 struct RuntimeResolveResult {
@@ -1259,8 +1263,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
   const int voteWindowCfg = std::max(1, atoi(cfg.get("vote_window", cfg.get("ocr_burst_frames", "1")).c_str()));
   bool fallbackEnabled = cfg.get("fallback_ocr_enabled", "0") == "1";
   bool crossingEnabled = (opts.crossingMode == "motion");
-  if (crossingEnabled && (opts.crossingP1 == opts.crossingP2)) {
-    cerr << "crossing-mode=motion requires --line x1,y1,x2,y2\n";
+  if (crossingEnabled && opts.crossingLineProvided && (opts.crossingP1 == opts.crossingP2)) {
+    cerr << "crossing-mode=motion with --line requires distinct points (x1,y1,x2,y2)\n";
     return;
   }
   Mat prevGray;
@@ -1281,6 +1285,19 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       roi = roiFromConfig(cfg, frame);
       if (roi.area() == 0) { roi = defaultRoi(frame); defaultUsed=true; }
     }
+    // When crossing is motion and --line was not set, use crossingLinePct on first frame
+    if (crossingEnabled && !opts.crossingLineProvided && (opts.crossingP1 == opts.crossingP2)) {
+      int y = static_cast<int>(frame.rows * opts.crossingLinePct / 100.0);
+      opts.crossingP1 = Point(0, y);
+      opts.crossingP2 = Point(frame.cols, y);
+      opts.crossingLineProvided = true; // avoid recomputing
+    }
+    // When filtering plates by line only, ensure we have a line (from pct if needed)
+    if (opts.platesOnlyPastLine && (opts.crossingP1 == opts.crossingP2)) {
+      int y = static_cast<int>(frame.rows * opts.crossingLinePct / 100.0);
+      opts.crossingP1 = Point(0, y);
+      opts.crossingP2 = Point(frame.cols, y);
+    }
     auto clampRect = [&](Rect r)->Rect{
       int x = std::max(0, std::min(r.x, frame.cols-1));
       int y = std::max(0, std::min(r.y, frame.rows-1));
@@ -1292,7 +1309,8 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     Rect alprRoi = opts.alprRoiProvided ? clampRect(opts.alprRoi) : Rect(0,0,frame.cols, frame.rows);
     vector<AlprRegionOfInterest> rois;
     bool isPostCrossing = (crossingFrame >= 0 && frameIdx >= crossingFrame);
-    if (alprRoi.area() > 0 && isPostCrossing) rois.push_back(AlprRegionOfInterest(alprRoi.x, alprRoi.y, alprRoi.width, alprRoi.height));
+    if (alprRoi.area() > 0 && (isPostCrossing || opts.platesOnlyPastLine)) rois.push_back(AlprRegionOfInterest(alprRoi.x, alprRoi.y, alprRoi.width, alprRoi.height));
+    if (rois.empty() && opts.platesOnlyPastLine) rois.push_back(AlprRegionOfInterest(0, 0, frame.cols, frame.rows));
     Mat bgr;
     if (frame.channels() == 1) cvtColor(frame, bgr, COLOR_GRAY2BGR); else bgr = frame;
     if (!bgr.isContinuous()) bgr = bgr.clone();
@@ -1387,6 +1405,13 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       if (crossingEvent && crossingFrame < 0) {
         crossingFrame = frameIdx;
       }
+      if (crossingFrame < 0 && opts.ocrOnlyAfterCrossing && opts.crossingFallbackSec > 0.0) {
+        double elapsed = wallSeconds() - startWall;
+        if (elapsed >= opts.crossingFallbackSec) {
+          crossingFrame = frameIdx;
+          if (opts.logEvents) logLine("[crossing] fallback: no crossing after " + std::to_string(elapsed) + "s, allowing OCR");
+        }
+      }
       gatedByCrossing = opts.ocrOnlyAfterCrossing && crossingFrame < 0;
       ocrRan = !gatedByCrossing;
     }
@@ -1394,7 +1419,7 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     AlprResults results;
     if (opts.maxSeconds > 0 && (wallSeconds() - startWall) >= opts.maxSeconds) break;
 
-    bool allowAlpr = (!opts.ocrOnlyAfterCrossing) || isPostCrossing;
+    bool allowAlpr = opts.platesOnlyPastLine || (!opts.ocrOnlyAfterCrossing) || isPostCrossing;
     if (!allowAlpr) {
       results.total_processing_time_ms = 0;
       results.img_width = frame.cols;
@@ -1429,6 +1454,14 @@ static void cmdPreview(const string& source, const string& confPath, const strin
       results = alpr.recognize(bgr.data, bgr.elemSize(), bgr.cols, bgr.rows, rois);
       alprCallsTotal++;
       if (isPostCrossing) alprCallsPostCrossing++; else alprCallsPreCrossing++;
+    }
+    if (allowAlpr && opts.platesOnlyPastLine && opts.crossingP1 != opts.crossingP2) {
+      double lineY = 0.5 * (opts.crossingP1.y + opts.crossingP2.y);
+      auto it = results.plates.begin();
+      while (it != results.plates.end()) {
+        if (bboxCenterY(*it) < lineY) it = results.plates.erase(it);
+        else ++it;
+      }
     }
     ocrPassesTotal += results.ocr_passes_total;
     double tNow = 0.0;
@@ -1631,6 +1664,10 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     fallbackAttemptsTotal += results.fallback_attempts;
 
     if (roi.area() > 0) rectangle(frame, roi, Scalar(0,255,0), 2);
+    if ((crossingEnabled || opts.platesOnlyPastLine) && opts.crossingP1 != opts.crossingP2) {
+      line(frame, opts.crossingP1, opts.crossingP2, Scalar(0,255,0), 3, LINE_AA);
+      putText(frame, opts.platesOnlyPastLine ? "count only plates past line" : "gate (OCR after crossing)", Point(opts.crossingP1.x, opts.crossingP1.y - 8), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255,0), 1, LINE_AA);
+    }
     if (speedCfg.enabled) {
       int yApx = static_cast<int>(lineA);
       int yBpx = static_cast<int>(lineB);
@@ -1659,38 +1696,49 @@ static void cmdPreview(const string& source, const string& confPath, const strin
     std::ostringstream oss;
     oss << "FPS: " << fps;
     putText(frame, oss.str(), Point(10,20), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(255,255,255),1,LINE_AA);
-    imshow("alpr-tool preview", frame);
-    char key = (char)waitKey(1);
-    if (key == 'q' || key == 27) break;
+    if (opts.outputMjpeg) {
+      std::vector<uchar> buf;
+      if (cv::imencode(".jpg", frame, buf)) {
+        cout << "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " << buf.size() << "\r\n\r\n";
+        cout.write(reinterpret_cast<const char*>(buf.data()), buf.size());
+        cout << "\r\n";
+        cout.flush();
+      }
+    } else {
+      imshow("alpr-tool preview", frame);
+      char key = (char)waitKey(1);
+      if (key == 'q' || key == 27) break;
+    }
   }
   auto wallClockEnd = std::chrono::system_clock::now();
   double wallTimeSeconds = std::chrono::duration<double>(wallClockEnd - wallClockStart).count();
   double fpsReport = (wallTimeSeconds > 0.0) ? (framesTotal / wallTimeSeconds) : 0.0;
-  cout << "[report]\n";
-  cout << "frames=" << framesTotal << "\n";
-  cout << "ocr_calls=" << ocrCallsTotal << "\n";
-  cout << "ocr_calls_post_crossing=" << ocrCallsPostCrossing << "\n";
-  cout << "alpr_calls_pre_crossing=" << alprCallsPreCrossing << "\n";
-  cout << "alpr_calls_post_crossing=" << alprCallsPostCrossing << "\n";
-  cout << "plates_found=" << platesFound << "\n";
-  cout << "plates_none=" << platesNone << "\n";
-  cout << "plates_found_post_crossing=" << platesFoundPostCrossing << "\n";
-  cout << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
-  cout << "crossing_frame=" << crossingFrame << "\n";
+  std::ostream& reportOut = opts.outputMjpeg ? std::cerr : std::cout;
+  reportOut << "[report]\n";
+  reportOut << "frames=" << framesTotal << "\n";
+  reportOut << "ocr_calls=" << ocrCallsTotal << "\n";
+  reportOut << "ocr_calls_post_crossing=" << ocrCallsPostCrossing << "\n";
+  reportOut << "alpr_calls_pre_crossing=" << alprCallsPreCrossing << "\n";
+  reportOut << "alpr_calls_post_crossing=" << alprCallsPostCrossing << "\n";
+  reportOut << "plates_found=" << platesFound << "\n";
+  reportOut << "plates_none=" << platesNone << "\n";
+  reportOut << "plates_found_post_crossing=" << platesFoundPostCrossing << "\n";
+  reportOut << "plates_none_post_crossing=" << platesNonePostCrossing << "\n";
+  reportOut << "crossing_frame=" << crossingFrame << "\n";
   int framesAfterCrossing = (crossingFrame >= 0) ? (framesTotal - crossingFrame + 1) : 0;
-  cout << "frames_after_crossing=" << framesAfterCrossing << "\n";
-  cout << "wall_time_s=" << wallTimeSeconds << "\n";
-  cout << "fps=" << fpsReport << "\n";
-  cout << "vehicle=" << opts.vehicle << "\n";
-  cout << "scenario=" << opts.scenario << "\n";
-  cout << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
-  cout << "vote_window=" << voteWindowCfg << "\n";
-  cout << "min_votes=" << opts.ocrMinVotes << "\n";
-  cout << "ocr_passes_total=" << ocrPassesTotal << "\n";
-  cout << "fallback_ocr_enabled=" << (fallbackEnabled ? 1 : 0) << "\n";
-  cout << "fallback_attempts=" << fallbackAttemptsTotal << "\n";
-  cout << "votes_emitted=" << votesEmittedTotal << "\n";
-  cout << "final_plate_count=" << finalPlateCountTotal << "\n";
+  reportOut << "frames_after_crossing=" << framesAfterCrossing << "\n";
+  reportOut << "wall_time_s=" << wallTimeSeconds << "\n";
+  reportOut << "fps=" << fpsReport << "\n";
+  reportOut << "vehicle=" << opts.vehicle << "\n";
+  reportOut << "scenario=" << opts.scenario << "\n";
+  reportOut << "ocr_burst_frames=" << opts.ocrBurstFrames << "\n";
+  reportOut << "vote_window=" << voteWindowCfg << "\n";
+  reportOut << "min_votes=" << opts.ocrMinVotes << "\n";
+  reportOut << "ocr_passes_total=" << ocrPassesTotal << "\n";
+  reportOut << "fallback_ocr_enabled=" << (fallbackEnabled ? 1 : 0) << "\n";
+  reportOut << "fallback_attempts=" << fallbackAttemptsTotal << "\n";
+  reportOut << "votes_emitted=" << votesEmittedTotal << "\n";
+  reportOut << "final_plate_count=" << finalPlateCountTotal << "\n";
 
   if (!opts.reportJsonPath.empty()) {
     ensureParentDir(opts.reportJsonPath);
@@ -1724,16 +1772,16 @@ static void cmdPreview(const string& source, const string& confPath, const strin
                 (platesFoundPostCrossing > 0);
     g_selfTestRan = true;
     g_selfTestPass = pass;
-    cout << (pass ? "SELF-TEST RESULT: PASS\n" : "SELF-TEST RESULT: FAIL\n");
+    reportOut << (pass ? "SELF-TEST RESULT: PASS\n" : "SELF-TEST RESULT: FAIL\n");
     if (pass) {
-      cout << "Runtime auto-corrected successfully\n";
-      cout << "Crossing gating enforced\n";
-      cout << "Plates detected after crossing\n";
+      reportOut << "Runtime auto-corrected successfully\n";
+      reportOut << "Crossing gating enforced\n";
+      reportOut << "Plates detected after crossing\n";
     }
-    cout << "Proof file: " << opts.reportJsonPath << "\n";
+    reportOut << "Proof file: " << opts.reportJsonPath << "\n";
   }
   if (logFile.good()) logFile.close();
-  destroyWindow("alpr-tool preview");
+  if (!opts.outputMjpeg) destroyWindow("alpr-tool preview");
 }
 
 static int runCmd(const string& cmd) {
@@ -2018,6 +2066,7 @@ int main(int argc, char** argv) {
           parts.push_back(stoi(v.substr(start)));
           opts.crossingP1 = Point(parts[0], parts[1]);
           opts.crossingP2 = Point(parts[2], parts[3]);
+          opts.crossingLineProvided = true;
           continue;
         }
         if (a.rfind("--motion-thresh",0)==0) { string v; eatValue(v); opts.motionThresh = stoi(v); continue; }
@@ -2028,6 +2077,8 @@ int main(int argc, char** argv) {
         if (a.rfind("--crossing-arm-min-frames",0)==0) { string v; eatValue(v); opts.crossingArmMinFrames = std::max(1, stoi(v)); continue; }
         if (a.rfind("--crossing-arm-min-ratio",0)==0) { string v; eatValue(v); opts.crossingArmMinRatio = stod(v); continue; }
         if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--plates-only-past-line",0)==0) { string v; eatValue(v); opts.platesOnlyPastLine = (v=="1"||v=="true"); continue; }
+        if (a.rfind("--output-mjpeg",0)==0) { string v; eatValue(v); opts.outputMjpeg = (v=="1"||v=="true"); continue; }
         if (a.rfind("--log-crossing-metrics",0)==0) { string v; eatValue(v); opts.logCrossingMetrics = (v=="1"||v=="true"); continue; }
         if (a.rfind("--ocr-only-after-crossing",0)==0) { string v; eatValue(v); opts.ocrOnlyAfterCrossing = (v=="1"||v=="true"); continue; }
         if (a.rfind("--log-ocr-metrics",0)==0) { string v; eatValue(v); opts.logOcrMetrics = (v=="1"||v=="true"); continue; }
@@ -2039,6 +2090,7 @@ int main(int argc, char** argv) {
         if (a.rfind("--gate-after-crossing",0)==0) { string v; eatValue(v); opts.gateAfterCrossing = (v=="1"||v=="true"); continue; }
         if (a.rfind("--report-json",0)==0) { eatValue(opts.reportJsonPath); continue; }
         if (a.rfind("--crossing-line-pct",0)==0) { string v; eatValue(v); opts.crossingLinePct = std::max(1.0, std::min(99.0, stod(v))); continue; }
+        if (a.rfind("--crossing-fallback-sec",0)==0) { string v; eatValue(v); opts.crossingFallbackSec = std::max(0.0, stod(v)); continue; }
         if (a.rfind("--log-throttle-ms",0)==0) { string v; eatValue(v); opts.logThrottleMs = stoi(v); continue; }
         if (a.rfind("--max-tracks",0)==0) { string v; eatValue(v); opts.maxTracks = stoi(v); continue; }
         if (a.rfind("--track-ttl-ms",0)==0) { string v; eatValue(v); opts.trackTtlMs = stoi(v); continue; }
@@ -2069,8 +2121,8 @@ int main(int argc, char** argv) {
         if (a=="-h"||a=="--help") {
           cout << "alpr-tool preview --source <video|device> [--conf <path>] [--log-file <path>] [--country <country>] [--speed-selftest]"
                << " [--log-plates 0|1] [--log-plates-every-n <int>] [--log-plates-file <path>] [--log-events 0|1] [--log-throttle-ms <int>]"
-               << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>]"
-               << " [--ocr-only-after-crossing 0|1] [--log-ocr-metrics 0|1] [--doctor]"
+               << " [--max-tracks <int>] [--track-ttl-ms <int>] [--max-seconds <int>] [--gate-after-crossing 0|1] [--report-json <path>] [--crossing-line-pct <0-100>] [--crossing-fallback-sec <sec>]"
+               << " [--ocr-only-after-crossing 0|1] [--plates-only-past-line 0|1] [--output-mjpeg 0|1] [--log-ocr-metrics 0|1] [--doctor]"
                << " [--crossing-mode off|motion] [--crossing-roi x,y,w,h] [--alpr-roi x,y,w,h] [--line x1,y1,x2,y2]"
                << " [--motion-thresh N] [--motion-min-area N] [--motion-min-ratio R] [--motion-direction-filter 0|1]"
                << " [--crossing-debounce N] [--crossing-arm-min-frames N] [--crossing-arm-min-ratio R]"
