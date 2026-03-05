@@ -107,6 +107,8 @@ ELSE()
   FIND_PACKAGE( OpenCV REQUIRED )
 ENDIF()
 
+FIND_PACKAGE( CURL REQUIRED )
+
 IF (${OpenCV_VERSION} VERSION_LESS 2.4.7)
 	MESSAGE(FATAL_ERROR "OpenCV version is not compatible : ${OpenCV_VERSION}")
 ENDIF()
@@ -191,7 +193,6 @@ IF (WITH_DAEMON)
     daemon/process_worker_pool.cpp
 )
 
-  FIND_PACKAGE( CURL REQUIRED )
   FIND_PACKAGE( log4cplus REQUIRED )
 
   TARGET_LINK_LIBRARIES(alprd

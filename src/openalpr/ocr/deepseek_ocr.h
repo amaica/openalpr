@@ -17,17 +17,29 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef OPENALPR_OCRFACTORY_H
-#define	OPENALPR_OCRFACTORY_H
+#ifndef OPENALPR_DEEPSEEK_OCR_H
+#define OPENALPR_DEEPSEEK_OCR_H
 
-#include "config.h"
 #include "ocr.h"
 
 namespace alpr
 {
 
-  OCR* createOcr(Config* config, std::string type = "");
+  class DeepSeekOCR : public OCR
+  {
+  public:
+    DeepSeekOCR(Config* config);
+    virtual ~DeepSeekOCR();
+
+  protected:
+    virtual std::vector<OcrChar> recognize_line(int line_index, PipelineData* pipeline_data);
+    virtual void segment(PipelineData* pipeline_data);
+
+  private:
+    std::string performDeepSeekRequest(const std::vector<unsigned char>& imageBuf);
+    std::vector<OcrChar> parseDeepSeekResponse(const std::string& response);
+  };
 
 }
-#endif	/* OPENALPR_DETECTORFACTORY_H */
 
+#endif // OPENALPR_DEEPSEEK_OCR_H

@@ -18,6 +18,7 @@ set(lpr_source_files
  utility.cpp
  ocr/tesseract_ocr.cpp
  ocr/ocr.cpp
+ ocr/deepseek_ocr.cpp
  ocr/ocrfactory.cpp
  postprocess/postprocess.cpp
  postprocess/regexrule.cpp
@@ -61,6 +62,7 @@ TARGET_LINK_LIBRARIES(openalpr
   ${STATE_DETECTION_LIB}
   ${OpenCV_LIBS}
   ${Tesseract_LIBRARIES}
+  ${CURL_LIBRARIES}
 )
 
 

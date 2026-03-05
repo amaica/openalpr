@@ -71,6 +71,7 @@ namespace alpr
     Detector* plateDetector;
     StateDetector* stateDetector;
     OCR* ocr;
+    OCR* fallbackOcr;
     std::string countryCode;
   };
 
