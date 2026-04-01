@@ -32,6 +32,7 @@ src/compile_commands.json
 .cache/
 .clangd/
 .vscode/
+.cursor/rules/
 .idea/
 .kdev/
 *.kdev4
