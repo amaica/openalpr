@@ -78,13 +78,27 @@ find_library(Leptonica_LIB
 		${CMAKE_SOURCE_DIR}/../libraries/tesseract-ocr/vs2010/LIB_Release
 )
 
+# Tesseract 5.x / Debian libtesseract-dev: só headers públicos em include/tesseract/.
+# Não há árvores ccstruct/ccmain/ccutil instaladas — reutiliza o mesmo include da API.
+if (Tesseract_INCLUDE_BASEAPI_DIR)
+  if (NOT Tesseract_INCLUDE_CCSTRUCT_DIR)
+    set(Tesseract_INCLUDE_CCSTRUCT_DIR "${Tesseract_INCLUDE_BASEAPI_DIR}")
+  endif()
+  if (NOT Tesseract_INCLUDE_CCMAIN_DIR)
+    set(Tesseract_INCLUDE_CCMAIN_DIR "${Tesseract_INCLUDE_BASEAPI_DIR}")
+  endif()
+  if (NOT Tesseract_INCLUDE_CCUTIL_DIR)
+    set(Tesseract_INCLUDE_CCUTIL_DIR "${Tesseract_INCLUDE_BASEAPI_DIR}")
+  endif()
+endif()
+
 # Set the include dir variables and the libraries and let libfind_process do the rest.
 # NOTE: Singular variables for this library, plural for libraries this this lib depends on.
+# NÃO incluir Tesseract_INCLUDE_DIRS aqui: ainda vazio e libfind_process marca NOT FOUND.
 set(Tesseract_PROCESS_INCLUDES 
     Tesseract_INCLUDE_BASEAPI_DIR 
 	Tesseract_INCLUDE_CCSTRUCT_DIR
 	Tesseract_INCLUDE_CCMAIN_DIR
-	Tesseract_INCLUDE_CCUTIL_DIR
-	Tesseract_INCLUDE_DIRS)
+	Tesseract_INCLUDE_CCUTIL_DIR)
 set(Tesseract_PROCESS_LIBS Tesseract_LIB Leptonica_LIB Tesseract_LIBRARIES)
 libfind_process(Tesseract)
