@@ -339,6 +339,8 @@ namespace alpr
     std::cout << "[config] profile=" << profile << std::endl;
     std::cout << "[config] vehicle=" << vehicle << std::endl;
     std::cout << "[config] scenario=" << scenario << std::endl;
+    garagePlateEnhancement = getBoolean(ini, defaultIni, "", "garage_plate_enhancement", scenario == "garagem");
+    std::cout << "[config] garage_plate_enhancement=" << (garagePlateEnhancement ? 1 : 0) << std::endl;
     std::cout << "[config] fallback_ocr_enabled=" << (fallbackOcrEnabled ? 1 : 0) << std::endl;
     std::cout << "[config] ocr_burst_frames=" << ocrBurstFrames
               << " vote_window=" << voteWindow

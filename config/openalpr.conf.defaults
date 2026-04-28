@@ -160,3 +160,6 @@ vehicle_attrs_min_confidence = 0.7
 profile = default
 vehicle = car
 scenario = default
+; When scenario=garagem, plate deskew crop is enhanced before OCR (CLAHE + bilateral + sharpen).
+; Default for missing key: on if scenario is garagem, off otherwise. Set 0 to disable in garagem.
+; garage_plate_enhancement = 1
