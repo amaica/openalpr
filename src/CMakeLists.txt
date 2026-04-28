@@ -1,5 +1,8 @@
 project(src)
 
+# Raiz do repositório openalpr/ (CMake superbuild: CMAKE_SOURCE_DIR é a raiz, não src/).
+get_filename_component(OPENALPR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+
 set(CMAKE_BUILD_TYPE RelWithDebugInfo)
 #set(CMAKE_BUILD_TYPE Debug)
 
@@ -15,7 +18,7 @@ add_definitions( -DOPENALPR_MAJOR_VERSION=${OPENALPR_MAJOR_VERSION})
 add_definitions( -DOPENALPR_MINOR_VERSION=${OPENALPR_MINOR_VERSION})
 add_definitions( -DOPENALPR_PATCH_VERSION=${OPENALPR_PATCH_VERSION})
 
-SET(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake_modules/")
+SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/")
 
 add_definitions( -DINSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}")
 
@@ -100,7 +103,7 @@ ELSE()
   # Discover OpenCV directory automatically
   find_path(OpenCV_DIR
     NAMES OpenCVConfig.cmake
-    HINTS ${CMAKE_SOURCE_DIR}/../libraries/opencv/
+    HINTS ${OPENALPR_REPO_ROOT}/libraries/opencv/
     /storage/projects/alpr/libraries/opencv/
     )
   # Opencv Package
@@ -240,22 +243,22 @@ ENDIF()
 
 if (NOT IOS)
   install (TARGETS    alpr DESTINATION   ${CMAKE_INSTALL_PREFIX}/bin)
-  install (FILES      ${CMAKE_SOURCE_DIR}/../doc/man/alpr.1 DESTINATION       ${CMAKE_INSTALL_PREFIX}/share/man/man1 COMPONENT doc)
+  install (FILES      ${OPENALPR_REPO_ROOT}/doc/man/alpr.1 DESTINATION       ${CMAKE_INSTALL_PREFIX}/share/man/man1 COMPONENT doc)
 ENDIF()
-install (DIRECTORY  ${CMAKE_SOURCE_DIR}/../runtime_data DESTINATION         ${CMAKE_INSTALL_PREFIX}/share/openalpr)
+install (DIRECTORY  ${OPENALPR_REPO_ROOT}/runtime_data DESTINATION         ${CMAKE_INSTALL_PREFIX}/share/openalpr)
 
 # set runtime_data to reflect the current CMAKE_INSTALL_PREFIX
-CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/../config/openalpr.conf.user ${CMAKE_CURRENT_BINARY_DIR}/config/openalpr.conf)
+CONFIGURE_FILE(${OPENALPR_REPO_ROOT}/config/openalpr.conf.user ${CMAKE_CURRENT_BINARY_DIR}/config/openalpr.conf)
 install (FILES      ${CMAKE_CURRENT_BINARY_DIR}/config/openalpr.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/openalpr/      COMPONENT config)
 
-CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/../config/openalpr.conf.defaults ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/openalpr.defaults.conf)
+CONFIGURE_FILE(${OPENALPR_REPO_ROOT}/config/openalpr.conf.defaults ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/openalpr.defaults.conf)
 install (FILES      ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/openalpr.defaults.conf DESTINATION ${CMAKE_INSTALL_PREFIX}/share/openalpr/config      COMPONENT config)
 
 IF (WITH_DAEMON)
-  CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/../config/alprd.conf.user ${CMAKE_CURRENT_BINARY_DIR}/config/alprd.conf)
+  CONFIGURE_FILE(${OPENALPR_REPO_ROOT}/config/alprd.conf.user ${CMAKE_CURRENT_BINARY_DIR}/config/alprd.conf)
   install (FILES      ${CMAKE_CURRENT_BINARY_DIR}/config/alprd.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/openalpr/      COMPONENT config)
 
-  CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/../config/alprd.conf.defaults ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/alprd.defaults.conf)
+  CONFIGURE_FILE(${OPENALPR_REPO_ROOT}/config/alprd.conf.defaults ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/alprd.defaults.conf)
   install (FILES      ${CMAKE_CURRENT_BINARY_DIR}/share/openalpr/config/alprd.defaults.conf DESTINATION ${CMAKE_INSTALL_PREFIX}/share/openalpr/config      COMPONENT config)
 
   install (TARGETS    alprd DESTINATION  ${CMAKE_INSTALL_PREFIX}/bin)
@@ -266,7 +269,7 @@ SET (CPACK_PACKAGE_VERSION ${OPENALPR_VERSION})
 SET (CPACK_SET_DESTDIR "on")
 SET (CPACK_GENERATOR "DEB;TGZ")
 SET (CPACK_PACKAGE_NAME "openalpr")
-SET (CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_SOURCE_DIR}/build;src;ALL;/")
+SET (CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};src;ALL;/")
 SET (CPACK_CMAKE_GENERATOR "Unix Makefiles")
 
 SET (CPACK_STRIP_FILES "1")
@@ -275,7 +278,7 @@ SET (CPACK_DEBIAN_PACKAGE_SECTION "video")
 SET (CPACK_DEBIAN_ARCHITECTURE ${CMAKE_SYSTEM_PROCESSOR})
 SET (CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.1.3), libgcc1 (>= 4.1.1), libtesseract3 (>= 3.0.3), libopencv-core2.4 (>= 2.4.8), libopencv-objdetect2.4 (>= 2.4.8), libopencv-highgui2.4 (>= 2.4.8), libopencv-imgproc2.4 (>= 2.4.8), libopencv-flann2.4 (>= 2.4.8), libopencv-features2d2.4 (>= 2.4.8), libopencv-video2.4 (>= 2.4.8), libopencv-gpu2.4 (>=2.4.8), liblog4cplus-1.0-4, libcurl3, beanstalkd")
 
-SET (CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/../LICENSE")
+SET (CPACK_RESOURCE_FILE_LICENSE "${OPENALPR_REPO_ROOT}/LICENSE")
 SET (CPACK_PACKAGE_DESCRIPTION "OpenALPR - Open Source Automatic License Plate Recognition")
 SET (CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenALPR is an open source Automatic License Plate Recognition library written in C++.  The library analyzes images and identifies license plates. The output is the text representation of any license plate characters found in the image.  Check out a live online demo here: http://www.openalpr.com/demo.html" )
 SET (CPACK_PACKAGE_CONTACT "Matt Hill <matt@ndu.com>")
