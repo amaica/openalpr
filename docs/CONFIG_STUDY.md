@@ -58,6 +58,7 @@ Carregadas em `config.cpp` (loadCommonValues + loadCountryValues). Formato INI s
 |-------|------|---------|-----------|
 | `vehicle` | string | `car` | `car` \| `moto` |
 | `scenario` | string | `default` | `default` \| `garagem` |
+| `garage_plate_enhancement` | bool | `1` se `scenario=garagem`, senão `0` | CLAHE + bilateral + sharpen no crop da placa antes do OCR (só efeito real em garagem) |
 | `ocr_burst_frames` | int | 1 (car) / 6 (moto) / 10 (garagem) | Frames de burst OCR |
 | `vote_window` | int | = ocr_burst_frames | Janela de voto temporal |
 | `min_votes` | int | 1 (car) / 3 (moto, garagem) | Mínimo de votos |

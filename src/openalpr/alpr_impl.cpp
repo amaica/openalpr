@@ -1,6 +1,7 @@
 
 
 #include "alpr_impl.h"
+#include "enhancement/plate_image_enhancer.h"
 #include "result_aggregator.h"
 #include "support/filesystem.h"
 #include <algorithm>
@@ -572,6 +573,11 @@ namespace alpr
       LicensePlateCandidate lp(&pipeline_data);
 
       lp.recognize();
+
+      {
+        PlateImageEnhancer enhancer = PlateImageEnhancer::fromConfig(config);
+        enhancer.applyBeforeOcr(pipeline_data.crop_gray);
+      }
 
       bool plateDetected = false;
       if (pipeline_data.disqualified && config->debugGeneral)

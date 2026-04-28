@@ -163,6 +163,8 @@ namespace alpr
       // Vehicle/scenario strategy (core-driven)
       std::string vehicle;         // car | moto
       std::string scenario;        // default | garagem
+      /** When true and scenario==garagem, plate deskew gray crop is enhanced before OCR (OpenCV pipeline). */
+      bool garagePlateEnhancement;
       int ocrBurstFrames;          // burst passes for OCR
       int voteWindow;              // window for temporal voting
       int minVotes;                // minimum votes for acceptance

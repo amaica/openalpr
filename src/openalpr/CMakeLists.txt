@@ -44,6 +44,9 @@ set(lpr_source_files
  cjson.c
  motiondetector.cpp
  result_aggregator.cpp
+ enhancement/garage_enhancement_strategy.cpp
+ enhancement/image_enhancement_strategy_factory.cpp
+ enhancement/plate_image_enhancer.cpp
 )
 
  
