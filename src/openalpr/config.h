@@ -159,6 +159,10 @@ namespace alpr
       std::vector<std::string> brHybridOrder;
       std::string brHybridFallbackRegion; // format: country:pattern (e.g., eu:ad)
       float brHybridMinConfidence;
+      /** If true, run fallback region (e.g. eu:ad) before br2/br instead of between br2 and br. */
+      bool brHybridEuFirst;
+      /** If true, prefer br/br2/br_moto results that matches_template over higher-confidence eu when both pass hybrid threshold. */
+      bool brHybridPreferBrWhenTemplate;
 
       // Vehicle/scenario strategy (core-driven)
       std::string vehicle;         // car | moto

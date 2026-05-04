@@ -377,31 +377,35 @@ namespace alpr
         std::cout << "[warn] moto_cascade_assets_missing fallback=br2->br\n";
         motoWarned = true;
       }
-      // Car path (existing order + optional eu/ad)
+      // Car path: optional eu/ad first (default pipeline), else inserted between first BR pair (legacy).
+      auto makeEuHybridAttempt = [&]() -> Attempt {
+        Attempt fb;
+        std::string fallback = config->brHybridFallbackRegion;
+        size_t pos = fallback.find(':');
+        if (pos != std::string::npos)
+        {
+          fb.country = fallback.substr(0, pos);
+          fb.pattern = fallback.substr(pos + 1);
+        }
+        else
+        {
+          fb.country = fallback;
+        }
+        fb.label = config->brHybridFallbackRegion;
+        return fb;
+      };
+
+      if (config->brHybridEuFirst && config->brHybridFallbackRegion.size() > 0)
+        attempts.push_back(makeEuHybridAttempt());
+
       for (size_t i = 0; i < config->brHybridOrder.size(); i++)
       {
         Attempt a;
         a.country = config->brHybridOrder[i];
         a.label = a.country;
         attempts.push_back(a);
-        if (i == 0 && config->brHybridFallbackRegion.size() > 0)
-        {
-          // Optional eu/ad between first and second attempt
-          std::string fallback = config->brHybridFallbackRegion;
-          size_t pos = fallback.find(':');
-          Attempt fb;
-          if (pos != std::string::npos)
-          {
-            fb.country = fallback.substr(0, pos);
-            fb.pattern = fallback.substr(pos + 1);
-          }
-          else
-          {
-            fb.country = fallback;
-          }
-          fb.label = config->brHybridFallbackRegion;
-          attempts.push_back(fb);
-        }
+        if (i == 0 && config->brHybridFallbackRegion.size() > 0 && !config->brHybridEuFirst)
+          attempts.push_back(makeEuHybridAttempt());
       }
     }
 
@@ -419,10 +423,13 @@ namespace alpr
     std::string originalDefaultRegion = defaultRegion;
 
     double bestOkConf = -1.0;
+    double bestBrTemplateOkConf = -1.0;
     double bestConf = -1.0;
     AlprFullDetails bestOkResult;
+    AlprFullDetails bestBrTemplateOkResult;
     AlprFullDetails bestResult;
     std::string bestOkLabel;
+    std::string bestBrTemplateOkLabel;
     std::string bestLabel;
 
     for (size_t idx = 0; idx < attempts.size(); idx++)
@@ -475,6 +482,15 @@ namespace alpr
         bestOkLabel = attempt.label;
       }
 
+      const bool brFamilyAttempt =
+          (attempt.country.size() >= 2 && attempt.country.compare(0, 2, "br") == 0);
+      if (ok && matchesTemplate && brFamilyAttempt && conf > bestBrTemplateOkConf)
+      {
+        bestBrTemplateOkConf = conf;
+        bestBrTemplateOkResult = result;
+        bestBrTemplateOkLabel = attempt.label;
+      }
+
       if (idx == 0 || conf > bestConf)
       {
         bestConf = conf;
@@ -488,6 +504,12 @@ namespace alpr
     config->setCountry(originalCountry);
     loadRecognizers();
     setDefaultRegion(originalDefaultRegion);
+    if (config->brHybridPreferBrWhenTemplate && bestBrTemplateOkConf >= 0)
+    {
+      std::cout << "[br-hybrid] final profile=" << bestBrTemplateOkLabel << " winner_conf=" << bestBrTemplateOkConf
+                << " (br template)" << std::endl;
+      return bestBrTemplateOkResult;
+    }
     if (bestOkConf >= 0)
     {
       std::cout << "[br-hybrid] final profile=" << bestOkLabel << " winner_conf=" << bestOkConf << std::endl;

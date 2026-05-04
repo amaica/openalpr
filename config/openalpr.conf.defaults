@@ -4,7 +4,8 @@
 runtime_dir = ./runtime_data
 
 
-ocr_img_size_percent = 1.33333333
+; 1.8 improves digit discrimination (e.g. 5 vs 6) on typical BR plate crops; 1.33 can confuse similar glyphs.
+ocr_img_size_percent = 1.8
 state_id_img_size_percent = 2.0
 
 ; Calibrating your camera improves detection accuracy in cases where vehicle plates are captured at a steep angle
@@ -61,17 +62,30 @@ detector_fallback_classic = 1
 ; If not, the result is disqualified. 
 must_match_pattern = 0
 
-; Brazil hybrid pipeline (br2 -> optional eu/ad -> br)
+; Brazil hybrid: eu:ad first (default OCR lane), then br2, br. When br/br2 matches a BR regex template,
+; that result wins over higher-confidence eu (br_hybrid_prefer_br_when_template).
 br_enable_hybrid = 1
 br_hybrid_order = br2,br
 br_hybrid_fallback_region = eu:ad
 br_hybrid_min_confidence = 70
+br_hybrid_eu_first = 1
+br_hybrid_prefer_br_when_template = 1
+
+; Silence "Missing config value" warnings when using this file as --config
+ocr_burst_frames = 1
+vote_window = 1
+min_votes = 1
+fallback_ocr_enabled = 0
+moto_upsample = 0
+moto_upsample_scale = 2.0
+garage_plate_enhancement = 0
 
 ; Vehicle profile selection (for moto vs carro)
 ; auto = decide by aspect ratio (moto_aspect_ratio_min/max)
 ; car  = força perfis de carro
 ; moto = força perfis de moto
-vehicle_profile_mode = auto
+; car avoids moto detector path on tight crops that look “tall plate” (common false moto).
+vehicle_profile_mode = car
 moto_aspect_ratio_min = 0.9
 moto_aspect_ratio_max = 2.2
 
