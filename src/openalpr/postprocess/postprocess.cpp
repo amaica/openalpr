@@ -19,6 +19,7 @@
 
 #include "postprocess.h"
 
+#include <algorithm>
 #include <fstream>
 #include <queue>
 #include <utility>
@@ -200,6 +201,18 @@ namespace alpr
 
     findAllPermutations(templateregion, topn);
 
+    // Prefer regex/template matches first, then raw OCR score — avoids a high-scoring
+    // invalid string (e.g. Mercosul position wrong) sitting at index 0.
+    if (allPossibilities.size() > 1)
+    {
+      std::stable_sort(allPossibilities.begin(), allPossibilities.end(),
+                       [](const PPResult& a, const PPResult& b) {
+                         if (a.matchesTemplate != b.matchesTemplate)
+                           return a.matchesTemplate;
+                         return a.totalscore > b.totalscore;
+                       });
+    }
+
     if (config->debugTiming)
     {
       timespec permutationEndTime;
@@ -222,11 +235,16 @@ namespace alpr
 
       // Now adjust the confidence scores to a percentage value
       float maxPercentScore = calculateMaxConfidenceScore();
-      float highestRelativeScore = (float) allPossibilities[0].totalscore;
+      float highestRelativeScore = allPossibilities[0].totalscore;
+      for (const auto& p : allPossibilities)
+        highestRelativeScore = std::max(highestRelativeScore, p.totalscore);
+      if (highestRelativeScore <= 0.0f)
+        highestRelativeScore = 1.0f;
 
       for (int i = 0; i < allPossibilities.size(); i++)
       {
-        allPossibilities[i].totalscore = maxPercentScore * (allPossibilities[i].totalscore / highestRelativeScore);
+        allPossibilities[i].totalscore =
+            maxPercentScore * (allPossibilities[i].totalscore / highestRelativeScore);
       }
     }
 

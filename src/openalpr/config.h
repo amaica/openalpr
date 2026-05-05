@@ -163,6 +163,10 @@ namespace alpr
       bool brHybridEuFirst;
       /** If true, prefer br/br2/br_moto results that matches_template over higher-confidence eu when both pass hybrid threshold. */
       bool brHybridPreferBrWhenTemplate;
+      /** If hybrid winner is not valid Mercosul LLLNLNN but br2/br has such a candidate in top-N, use that BR result. */
+      bool brHybridPreferValidMercosul;
+      /** On br/br2 OCR, if best string is not Mercosul-shaped, pick first top-N that is (e.g. 0 vs D). */
+      bool brPreferMercosulBestPlate;
 
       // Vehicle/scenario strategy (core-driven)
       std::string vehicle;         // car | moto

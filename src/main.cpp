@@ -50,7 +50,7 @@ bool do_motiondetection = true;
 /** Function Headers */
 bool detectandshow(Alpr* alpr, cv::Mat frame, std::string region, bool writeJson);
 void print_results(const AlprResults& results, bool writeJson);
-int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePattern, int topn, bool debug_mode, bool outputJson, int jobs);
+int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePattern, int topn, bool debug_mode, bool outputJson, int jobs, bool skipDetectionCli);
 bool is_supported_image(std::string image_file);
 
 bool measureProcessingTime = false;
@@ -71,6 +71,7 @@ int main( int argc, const char** argv )
   int topn;
   bool debug_mode = false;
   int jobs = 1;
+  bool skip_detection_cli = false;
 
   TCLAP::CmdLine cmd("OpenAlpr Command Line Utility", ' ', Alpr::getVersion());
 
@@ -89,6 +90,7 @@ int main( int argc, const char** argv )
   TCLAP::SwitchArg detectRegionSwitch("d","detect_region","Attempt to detect the region of the plate image.  [Experimental]  Default=off", cmd, false);
   TCLAP::SwitchArg clockSwitch("","clock","Measure/print the total time to process image and all plates.  Default=off", cmd, false);
   TCLAP::SwitchArg motiondetect("", "motion", "Use motion detection on video file or stream.  Default=off", cmd, false);
+  TCLAP::SwitchArg skipDetectionSwitch("", "skip-detection", "Skip plate detector; treat image/ROI as a plate crop (sets skip_detection after loading config).", cmd, false);
 
   try
   {
@@ -120,6 +122,7 @@ int main( int argc, const char** argv )
     measureProcessingTime = clockSwitch.getValue();
 	do_motiondetection = motiondetect.getValue();
     jobs = jobsArg.getValue();
+    skip_detection_cli = skipDetectionSwitch.getValue();
   }
   catch (TCLAP::ArgException &e)    // catch any exceptions
   {
@@ -146,7 +149,7 @@ int main( int argc, const char** argv )
 
   if (parallelEligible)
   {
-    return processImagesParallel(filenames, country, configFile, detectRegion, templatePattern, topn, debug_mode, outputJson, jobs);
+    return processImagesParallel(filenames, country, configFile, detectRegion, templatePattern, topn, debug_mode, outputJson, jobs, skip_detection_cli);
   }
   else if (jobs > 1)
   {
@@ -162,6 +165,9 @@ int main( int argc, const char** argv )
   {
     alpr.getConfig()->setDebug(true);
   }
+
+  if (skip_detection_cli)
+    alpr.setSkipDetection(true);
 
   if (detectRegion)
     alpr.setDetectRegion(detectRegion);
@@ -446,7 +452,7 @@ bool detectandshow( Alpr* alpr, cv::Mat frame, std::string region, bool writeJso
 }
 
 
-int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePatternParam, int topn, bool debug_mode, bool outputJson, int jobs)
+int processImagesParallel(const std::vector<std::string>& filenames, const std::string& country, const std::string& configFile, bool detectRegion, const std::string& templatePatternParam, int topn, bool debug_mode, bool outputJson, int jobs, bool skipDetectionCli)
 {
   if (filenames.size() == 0)
     return 0;
@@ -458,6 +464,7 @@ int processImagesParallel(const std::vector<std::string>& filenames, const std::
   params.templatePattern = templatePatternParam;
   params.topn = topn;
   params.detectRegion = detectRegion;
+  params.skipDetection = skipDetectionCli;
   params.debug = debug_mode;
   params.measureProcessingTime = measureProcessingTime;
 

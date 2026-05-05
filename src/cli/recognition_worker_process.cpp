@@ -86,6 +86,7 @@ bool RecognitionWorkerProcess::start()
     alpr::Alpr alpr(params_.country, params_.configFile);
     alpr.setTopN(params_.topn);
     if (params_.detectRegion) alpr.setDetectRegion(true);
+    if (params_.skipDetection) alpr.setSkipDetection(true);
     if (!params_.templatePattern.empty()) alpr.setDefaultRegion(params_.templatePattern);
     if (params_.debug) alpr.getConfig()->setDebug(true);
 

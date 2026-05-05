@@ -369,6 +369,8 @@ namespace alpr
     brHybridMinConfidence = getFloat(ini, defaultIni, "", "br_hybrid_min_confidence", 80);
     brHybridEuFirst = getBoolean(ini, defaultIni, "", "br_hybrid_eu_first", false);
     brHybridPreferBrWhenTemplate = getBoolean(ini, defaultIni, "", "br_hybrid_prefer_br_when_template", true);
+    brHybridPreferValidMercosul = getBoolean(ini, defaultIni, "", "br_hybrid_prefer_valid_mercosul", true);
+    brPreferMercosulBestPlate = getBoolean(ini, defaultIni, "", "br_prefer_mercosul_best_plate", true);
 
     // OCR / plugins / vehicle attributes (parser only; no runtime changes)
     ocrConfig.primary = getString(ini, defaultIni, "", "ocr_primary", "openalpr");
