@@ -97,6 +97,7 @@ namespace alpr
       void setMask(unsigned char* pixelData, int bytesPerPixel, int imgWidth, int imgHeight);
       
       void setDetectRegion(bool detectRegion);
+      void setSkipDetection(bool skipDetection);
       void setTopN(int topn);
       void setDefaultRegion(std::string region);
 

@@ -70,6 +70,10 @@ br_hybrid_fallback_region = eu:ad
 br_hybrid_min_confidence = 70
 br_hybrid_eu_first = 1
 br_hybrid_prefer_br_when_template = 1
+; If hybrid winner is not a valid BR car shape (Mercosul LLLNLNN or legacy LLLNNNN) but br2/br top-N has one, prefer BR.
+br_hybrid_prefer_valid_mercosul = 1
+; On br/br2 OCR, if best string matches neither BR car template, use highest-conf top-N that does (Mercosul or legacy).
+br_prefer_mercosul_best_plate = 1
 
 ; Silence "Missing config value" warnings when using this file as --config
 ocr_burst_frames = 1

@@ -111,6 +111,11 @@ namespace alpr
     impl->setDetectRegion(detectRegion);
   }
 
+  void Alpr::setSkipDetection(bool skipDetection)
+  {
+    impl->setSkipDetection(skipDetection);
+  }
+
   void Alpr::setTopN(int topN)
   {
     impl->setTopN(topN);

@@ -164,6 +164,8 @@ namespace alpr
       void setMask(unsigned char* pixelData, int bytesPerPixel, int imgWidth, int imgHeight);
       
       void setDetectRegion(bool detectRegion);
+      /** Same as config skip_detection=1: assume ROI is already a plate crop (no detector pass). */
+      void setSkipDetection(bool skipDetection);
       void setTopN(int topN);
       void setDefaultRegion(std::string region);
 

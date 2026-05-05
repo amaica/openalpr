@@ -24,6 +24,8 @@ public:
     std::string templatePattern;
     int topn = 10;
     bool detectRegion = false;
+    /** When true, worker calls Alpr::setSkipDetection(true) after load (CLI --skip-detection). */
+    bool skipDetection = false;
     bool debug = false;
     bool measureProcessingTime = false;
   };

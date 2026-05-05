@@ -5,6 +5,8 @@
 #include "result_aggregator.h"
 #include "support/filesystem.h"
 #include <algorithm>
+#include <cctype>
+#include <regex>
 
 
 void plateAnalysisThread(void* arg);
@@ -21,6 +23,45 @@ namespace alpr
       if (rois.size() > 0)
         return rois;
       return { cv::Rect(0, 0, img.cols, img.rows) };
+    }
+
+    inline std::string normalizePlate7(const std::string& raw)
+    {
+      std::string s;
+      s.reserve(raw.size());
+      for (unsigned char uc : raw)
+      {
+        char c = static_cast<char>(uc);
+        if (c != '\n' && c != '\r')
+          s += static_cast<char>(std::toupper(c));
+      }
+      return s;
+    }
+
+    /** Mercosul: br.patterns "br @@@#@##" → LLLNLNN */
+    inline bool plateMatchesMercosul7(const std::string& raw)
+    {
+      const std::string s = normalizePlate7(raw);
+      if (s.size() != 7)
+        return false;
+      static const std::regex kMercosulCar("^[A-Z]{3}[0-9][A-Z][0-9]{2}$");
+      return std::regex_match(s, kMercosulCar);
+    }
+
+    /** Legacy BR car: br.patterns "br @@@####" → LLLNNNN (3 letters + 4 digits) */
+    inline bool plateMatchesOldBr7(const std::string& raw)
+    {
+      const std::string s = normalizePlate7(raw);
+      if (s.size() != 7)
+        return false;
+      static const std::regex kOldBr("^[A-Z]{3}[0-9]{4}$");
+      return std::regex_match(s, kOldBr);
+    }
+
+    /** Either national car template (Mercosul or pre-Mercosul). */
+    inline bool plateMatchesBrCar7(const std::string& raw)
+    {
+      return plateMatchesMercosul7(raw) || plateMatchesOldBr7(raw);
     }
 
     void applyPreprocessing(const Config* config, cv::Mat& color, cv::Mat& gray, const std::vector<cv::Rect>& rois)
@@ -378,6 +419,8 @@ namespace alpr
         motoWarned = true;
       }
       // Car path: optional eu/ad first (default pipeline), else inserted between first BR pair (legacy).
+      // skip_detection (plate crop): run br2 then br, then eu last — eu still runs if BR pipelines fail entirely,
+      // but any accepted BR result wins over eu (see bestBrFamily* below).
       auto makeEuHybridAttempt = [&]() -> Attempt {
         Attempt fb;
         std::string fallback = config->brHybridFallbackRegion;
@@ -395,17 +438,32 @@ namespace alpr
         return fb;
       };
 
-      if (config->brHybridEuFirst && config->brHybridFallbackRegion.size() > 0)
-        attempts.push_back(makeEuHybridAttempt());
-
-      for (size_t i = 0; i < config->brHybridOrder.size(); i++)
+      if (config->skipDetection)
       {
-        Attempt a;
-        a.country = config->brHybridOrder[i];
-        a.label = a.country;
-        attempts.push_back(a);
-        if (i == 0 && config->brHybridFallbackRegion.size() > 0 && !config->brHybridEuFirst)
+        for (size_t i = 0; i < config->brHybridOrder.size(); i++)
+        {
+          Attempt a;
+          a.country = config->brHybridOrder[i];
+          a.label = a.country;
+          attempts.push_back(a);
+        }
+        if (config->brHybridFallbackRegion.size() > 0)
           attempts.push_back(makeEuHybridAttempt());
+      }
+      else
+      {
+        if (config->brHybridEuFirst && config->brHybridFallbackRegion.size() > 0)
+          attempts.push_back(makeEuHybridAttempt());
+
+        for (size_t i = 0; i < config->brHybridOrder.size(); i++)
+        {
+          Attempt a;
+          a.country = config->brHybridOrder[i];
+          a.label = a.country;
+          attempts.push_back(a);
+          if (i == 0 && config->brHybridFallbackRegion.size() > 0 && !config->brHybridEuFirst)
+            attempts.push_back(makeEuHybridAttempt());
+        }
       }
     }
 
@@ -424,12 +482,15 @@ namespace alpr
 
     double bestOkConf = -1.0;
     double bestBrTemplateOkConf = -1.0;
+    double bestBrFamilyOkConf = -1.0;
     double bestConf = -1.0;
     AlprFullDetails bestOkResult;
     AlprFullDetails bestBrTemplateOkResult;
+    AlprFullDetails bestBrFamilyOkResult;
     AlprFullDetails bestResult;
     std::string bestOkLabel;
     std::string bestBrTemplateOkLabel;
+    std::string bestBrFamilyOkLabel;
     std::string bestLabel;
 
     for (size_t idx = 0; idx < attempts.size(); idx++)
@@ -455,11 +516,18 @@ namespace alpr
         matchesTemplate = result.results.plates[0].bestPlate.matches_template;
       }
 
-      bool ok = (result.results.plates.size() > 0) && (conf >= config->brHybridMinConfidence);
+      const bool brFamilyAttempt =
+          (attempt.country.size() >= 2 && attempt.country.compare(0, 2, "br") == 0);
+
+      float hybridMinConf = config->brHybridMinConfidence;
+      if (config->skipDetection)
+        hybridMinConf = std::min(hybridMinConf, 52.0f);
+
+      bool ok = (result.results.plates.size() > 0) && (conf >= hybridMinConf);
       std::string reason = "";
       if (result.results.plates.size() == 0)
         reason = "no_plate";
-      else if (conf < config->brHybridMinConfidence)
+      else if (conf < hybridMinConf)
         reason = "low_conf";
       else if (config->mustMatchPattern && !matchesTemplate)
       {
@@ -482,8 +550,13 @@ namespace alpr
         bestOkLabel = attempt.label;
       }
 
-      const bool brFamilyAttempt =
-          (attempt.country.size() >= 2 && attempt.country.compare(0, 2, "br") == 0);
+      if (ok && brFamilyAttempt && conf > bestBrFamilyOkConf)
+      {
+        bestBrFamilyOkConf = conf;
+        bestBrFamilyOkResult = result;
+        bestBrFamilyOkLabel = attempt.label;
+      }
+
       if (ok && matchesTemplate && brFamilyAttempt && conf > bestBrTemplateOkConf)
       {
         bestBrTemplateOkConf = conf;
@@ -510,9 +583,84 @@ namespace alpr
                 << " (br template)" << std::endl;
       return bestBrTemplateOkResult;
     }
+    if (config->skipDetection && bestBrFamilyOkConf >= 0)
+    {
+      std::cout << "[br-hybrid] final profile=" << bestBrFamilyOkLabel << " winner_conf=" << bestBrFamilyOkConf
+                << " (skip crop: BR preferred over eu)" << std::endl;
+      return bestBrFamilyOkResult;
+    }
     if (bestOkConf >= 0)
     {
-      std::cout << "[br-hybrid] final profile=" << bestOkLabel << " winner_conf=" << bestOkConf << std::endl;
+      const float minBrCarC = config->brHybridMinConfidence;
+
+      // 1) BR family ran and passed: prefer a BR car-shaped top-N (Mercosul OR legacy LLLNNNN) over invalid EU winner.
+      if (config->brHybridPreferValidMercosul && bestBrFamilyOkConf >= 0 &&
+          bestOkResult.results.plates.size() > 0 &&
+          bestBrFamilyOkResult.results.plates.size() > 0)
+      {
+        const std::string& win = bestOkResult.results.plates[0].bestPlate.characters;
+        if (!plateMatchesBrCar7(win))
+        {
+          const AlprPlate* bestBr = nullptr;
+          for (const auto& cand : bestBrFamilyOkResult.results.plates[0].topNPlates)
+          {
+            if (!plateMatchesBrCar7(cand.characters) || cand.overall_confidence < minBrCarC)
+              continue;
+            if (bestBr == nullptr || cand.overall_confidence > bestBr->overall_confidence)
+              bestBr = &cand;
+          }
+          if (bestBr != nullptr)
+          {
+            AlprFullDetails swapped = bestBrFamilyOkResult;
+            swapped.results.plates[0].bestPlate = *bestBr;
+            std::cout << "[br-hybrid] prefer_valid_br_car: using BR " << bestBr->characters
+                      << " conf=" << bestBr->overall_confidence << " over winner " << win
+                      << " (profile was " << bestOkLabel << ")" << std::endl;
+            std::cout << "[br-hybrid] final profile=" << bestBrFamilyOkLabel
+                      << " winner_conf=" << bestBr->overall_confidence << std::endl;
+            return swapped;
+          }
+        }
+      }
+
+      // 2) BR detectors missed but EU found a region: pick best top-N that matches Mercosul OR legacy BR (7 chars).
+      if (config->brHybridPreferValidMercosul && bestOkResult.results.plates.size() > 0 &&
+          bestBrFamilyOkConf < 0)
+      {
+        AlprPlateResult& p0 = bestOkResult.results.plates[0];
+        const std::string prevWinner = p0.bestPlate.characters;
+        if (!plateMatchesBrCar7(prevWinner))
+        {
+          const AlprPlate* bestShape = nullptr;
+          for (const auto& cand : p0.topNPlates)
+          {
+            if (!plateMatchesBrCar7(cand.characters) || cand.overall_confidence < minBrCarC)
+              continue;
+            if (bestShape == nullptr || cand.overall_confidence > bestShape->overall_confidence)
+              bestShape = &cand;
+          }
+          if (bestShape != nullptr)
+          {
+            p0.bestPlate = *bestShape;
+            for (size_t ti = 0; ti < p0.topNPlates.size(); ++ti)
+            {
+              if (p0.topNPlates[ti].characters == bestShape->characters)
+              {
+                std::swap(p0.topNPlates[0], p0.topNPlates[ti]);
+                break;
+              }
+            }
+            std::cout << "[br-hybrid] eu_lane: promoted BR car shape " << p0.bestPlate.characters << " conf="
+                      << p0.bestPlate.overall_confidence << " over " << prevWinner
+                      << " (BR detector missed; Mercosul or LLLNNNN from EU top-N)" << std::endl;
+          }
+        }
+      }
+
+      float reportConf = bestOkConf;
+      if (bestOkResult.results.plates.size() > 0)
+        reportConf = static_cast<float>(bestOkResult.results.plates[0].bestPlate.overall_confidence);
+      std::cout << "[br-hybrid] final profile=" << bestOkLabel << " winner_conf=" << reportConf << std::endl;
       return bestOkResult;
     }
     std::cout << "[br-hybrid] final fallback profile=" << bestLabel << " winner_conf=" << bestConf << std::endl;
@@ -646,6 +794,17 @@ namespace alpr
         }
         #endif
 
+        {
+          PostProcess& pp = country_recognizers.ocr->postProcessor;
+          std::vector<std::string> pats = pp.getPatterns();
+          if (!pats.empty() && !pp.regionIsValid(baseResult.region))
+          {
+            // National-only .patterns (e.g. br / br2 only): ignore state-detector UF code for template matching.
+            baseResult.region = pats[0];
+            baseResult.regionConfidence = 0;
+          }
+        }
+
         if (baseResult.region.length() > 0 && country_recognizers.ocr->postProcessor.regionIsValid(baseResult.region) == false)
         {
           std::cerr << "Invalid pattern provided: " << baseResult.region << std::endl;
@@ -690,6 +849,23 @@ namespace alpr
           if (out.topNPlates.size() > bestPlateIndex)
           {
             out.bestPlate = out.topNPlates[bestPlateIndex];
+            if (config->brPreferMercosulBestPlate && config->country.size() >= 2 &&
+                config->country.compare(0, 2, "br") == 0)
+            {
+              if (!plateMatchesBrCar7(out.bestPlate.characters))
+              {
+                const AlprPlate* bestP = nullptr;
+                for (const auto& p : out.topNPlates)
+                {
+                  if (!plateMatchesBrCar7(p.characters))
+                    continue;
+                  if (bestP == nullptr || p.overall_confidence > bestP->overall_confidence)
+                    bestP = &p;
+                }
+                if (bestP != nullptr)
+                  out.bestPlate = *bestP;
+              }
+            }
             return true;
           }
           return false;
@@ -1167,6 +1343,12 @@ namespace alpr
 
 
   }
+
+  void AlprImpl::setSkipDetection(bool skipDetection)
+  {
+    this->config->skipDetection = skipDetection;
+  }
+
   void AlprImpl::setTopN(int topn)
   {
     this->topN = topn;
