@@ -39,6 +39,15 @@ src/compile_commands.json
 nbproject/
 .pytest_cache/
 
+# Local test images / enhancer outputs (repo root)
+/*.png
+/*_enhanced*.png
+/*_enhanced_alpr*.png
+
+# Stray local files accidentally created during experiments
+/...
+/]
+
 # Project ancillary dirs
 windows/
 scratch/
