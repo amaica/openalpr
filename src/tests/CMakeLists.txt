@@ -18,4 +18,13 @@ TARGET_LINK_LIBRARIES(unittests
 
 add_test(unittests unittests)
 
+if(UNIX AND NOT WIN32)
+  add_test(
+    NAME garage_alpr_contract
+    COMMAND "${OPENALPR_REPO_ROOT}/scripts/test_garage_alpr_contract.sh"
+    WORKING_DIRECTORY "${OPENALPR_REPO_ROOT}"
+  )
+  set_tests_properties(garage_alpr_contract PROPERTIES LABELS "integration;script")
+endif()
+
 add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})

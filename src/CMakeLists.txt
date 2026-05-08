@@ -148,6 +148,8 @@ set(CMAKE_CSS_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall ")
 if (NOT IOS)
   ADD_EXECUTABLE( alpr  main.cpp cli/recognition_worker_process.cpp )
   ADD_EXECUTABLE( alpr-tool tools/alpr_tool.cpp )
+  ADD_EXECUTABLE( garage_alpr_daemon tools/garage_alpr_daemon.cpp )
+  ADD_EXECUTABLE( garage_alpr_worker_daemon tools/garage_alpr_worker_daemon.cpp cli/recognition_worker_process.cpp )
 ENDIF()
 
 if (WIN32) 
@@ -175,6 +177,24 @@ if (NOT IOS)
     ${Extra_LIBS}
   )
   TARGET_LINK_LIBRARIES(alpr-tool
+    ${OPENALPR_LIB}
+    ${STATE_DETECTION_LIB}
+    support
+    video
+    ${OpenCV_LIBS}
+    ${Tesseract_LIBRARIES}
+    ${Extra_LIBS}
+  )
+  TARGET_LINK_LIBRARIES(garage_alpr_daemon
+    ${OPENALPR_LIB}
+    ${STATE_DETECTION_LIB}
+    support
+    video
+    ${OpenCV_LIBS}
+    ${Tesseract_LIBRARIES}
+    ${Extra_LIBS}
+  )
+  TARGET_LINK_LIBRARIES(garage_alpr_worker_daemon
     ${OPENALPR_LIB}
     ${STATE_DETECTION_LIB}
     support

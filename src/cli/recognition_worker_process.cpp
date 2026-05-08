@@ -102,18 +102,8 @@ bool RecognitionWorkerProcess::start()
         break;
       }
 
-      cv::Mat frame = cv::imread(path);
-      if (frame.empty())
-      {
-        std::string msg = path + "\t{}\n";
-        writeAll(writeFd, msg.data(), msg.size());
-        continue;
-      }
-
-      std::vector<alpr::AlprRegionOfInterest> rois;
-      rois.push_back(alpr::AlprRegionOfInterest(0, 0, frame.cols, frame.rows));
-
-      alpr::AlprResults results = alpr.recognize(frame.data, frame.elemSize(), frame.cols, frame.rows, rois);
+      // Use filepath recognition to match single-process CLI behavior (prewarp, BR hybrid fallback, etc.).
+      alpr::AlprResults results = alpr.recognize(path);
       std::string json = alpr.toJson(results);
 
       if (params_.measureProcessingTime && results.total_processing_time_ms > 0)
